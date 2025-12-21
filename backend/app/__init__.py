@@ -10,7 +10,7 @@ from pathlib import Path
 import logging
 import uuid
 import time
-from flask import Flask, request, g
+from flask import Flask, request, g, jsonify
 from flask_cors import CORS
 from flask_caching import Cache
 from flask_limiter import Limiter
@@ -186,9 +186,23 @@ def load_ontology(app):
             # local file URI.
             source_uri = ontology_path if (isinstance(ontology_path, str) and (ontology_path.startswith('http://') or ontology_path.startswith('https://'))) else ontology_uri
             r.set('feinschmecker:ontology_uri', source_uri)
+            # Publish local file path if available so workers prefer local loads
+            try:
+                if 'absolute_path' in locals() and absolute_path.exists():
+                    r.set('feinschmecker:ontology_local', str(absolute_path))
+            except Exception:
+                app.logger.exception('Failed to publish ontology_local to Redis')
+
             # Use a monotonically increasing version token (timestamp)
-            r.set('feinschmecker:ontology_version', str(int(__import__('time').time())))
-            app.logger.info("Published ontology_uri and ontology_version to Redis for workers")
+            ver = str(int(__import__('time').time()))
+            r.set('feinschmecker:ontology_version', ver)
+            # readiness flag: set to same timestamp so workers can wait on readiness instead of polling URL
+            try:
+                r.set('feinschmecker:ontology_ready', ver)
+            except Exception:
+                app.logger.exception('Failed to set ontology_ready key in Redis')
+
+            app.logger.info("Published ontology_uri, ontology_local (if present), ontology_version and ontology_ready to Redis for workers")
         except Exception:
             app.logger.exception("Failed to publish ontology version to Redis")
 
@@ -343,6 +357,20 @@ def create_app(config_name=None):
                 'recipes': '/recipes'
             }
         }
+
+    # Admin endpoint to refresh the ontology from the configured URL into the cache dir
+    @app.route('/admin/refresh_ontology', methods=['POST'])
+    def refresh_ontology():
+        try:
+            # Attempt to reload/download ontology into the configured cache dir
+            with app.app_context():
+                new_onto = load_ontology(app)
+            if new_onto is None:
+                return jsonify({'status': 'error', 'message': 'Failed to load ontology'}), 500
+            return jsonify({'status': 'ok', 'message': 'Ontology reloaded'}), 200
+        except Exception as e:
+            app.logger.exception('Failed to refresh ontology via admin endpoint')
+            return jsonify({'status': 'error', 'message': str(e)}), 500
     
     app.logger.info(f"Feinschmecker API initialized in {config_name or 'default'} mode")
     

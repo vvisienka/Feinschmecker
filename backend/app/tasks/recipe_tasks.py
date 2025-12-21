@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 _ontology = None
 _ontology_version = None
 _ontology_uri_cached = None
+_ontology_mtime = None
 
 
 def _get_ontology_for_tasks():
@@ -33,9 +34,9 @@ def _get_ontology_for_tasks():
     This keeps the task stateless from the caller perspective:
     the only inputs are function arguments, ontology is read-only.
     """
-    global _ontology, _ontology_version, _ontology_uri_cached
+    global _ontology, _ontology_version, _ontology_uri_cached, _ontology_mtime
 
-    # Try to read a published ontology URI/version from Redis (published by Flask)
+    # Try to read published ontology metadata from Redis (published by Flask)
     try:
         import os
         import redis as _redis
@@ -44,17 +45,29 @@ def _get_ontology_for_tasks():
         r = _redis.from_url(redis_url)
         redis_version = r.get('feinschmecker:ontology_version')
         redis_uri = r.get('feinschmecker:ontology_uri')
+        redis_local = r.get('feinschmecker:ontology_local')
+        redis_ready = r.get('feinschmecker:ontology_ready')
         if redis_version is not None:
             redis_version = redis_version.decode() if isinstance(redis_version, bytes) else str(redis_version)
         if redis_uri is not None:
             redis_uri = redis_uri.decode() if isinstance(redis_uri, bytes) else str(redis_uri)
+        if redis_local is not None:
+            redis_local = redis_local.decode() if isinstance(redis_local, bytes) else str(redis_local)
+        if redis_ready is not None:
+            redis_ready = redis_ready.decode() if isinstance(redis_ready, bytes) else str(redis_ready)
     except Exception:
         redis_version = None
         redis_uri = None
+        redis_local = None
+        redis_ready = None
 
-    # Determine which ontology URI to use: prefer Redis-published resolved URI
+    # Determine which ontology URI to use: prefer Redis-published local path if present,
+    # otherwise fall back to Redis-published URI or configured ONTOLOGY_URL.
     config = get_config()
-    if redis_uri:
+    if redis_local:
+        # prefer local filesystem path published by the master process
+        ontology_uri = Path(redis_local).resolve().as_uri()
+    elif redis_uri:
         ontology_uri = redis_uri
     else:
         ontology_uri = config.ONTOLOGY_URL
@@ -62,7 +75,7 @@ def _get_ontology_for_tasks():
     if not ontology_uri:
         raise RuntimeError("ONTOLOGY_URL is not configured")
 
-    # If we don't have an ontology yet, or the version/URI changed, (re)load
+    # If we don't have an ontology yet, or the version/URI/local file changed, (re)load
     need_reload = False
     if _ontology is None:
         need_reload = True
@@ -70,6 +83,17 @@ def _get_ontology_for_tasks():
         need_reload = True
     elif redis_uri and _ontology_uri_cached != redis_uri:
         need_reload = True
+    # If a local path was published, additionally check file mtime for out-of-band edits
+    try:
+        if redis_local:
+            local_path = Path(redis_local)
+            if local_path.exists():
+                mtime = str(int(local_path.stat().st_mtime))
+                if _ontology_mtime is None or _ontology_mtime != mtime:
+                    need_reload = True
+    except Exception:
+        # ignore file access errors and fall back to Redis version checks
+        pass
 
     if need_reload:
         logger.info(f"[Celery] Loading ontology from {ontology_uri} (reload={_ontology is not None})")
@@ -98,12 +122,13 @@ def _get_ontology_for_tasks():
                     waited += wait_interval
 
                 if not Path(path).exists():
+                    # fallback: if Redis indicates a remote URI and it's reachable, allow that
                     msg = f"Ontology file not available after waiting {wait_timeout}s: {path}"
                     logger.warning(f"[Celery] {msg}")
                     raise FileNotFoundError(msg)
 
             elif ontology_uri.startswith('http://') or ontology_uri.startswith('https://'):
-                # Wait for the remote URL to be reachable (HEAD/GET) before letting Owlready2 fetch it.
+                # Only use remote URL as last resort; wait for reachability
                 logger.info(f"[Celery] Waiting up to {wait_timeout}s for ontology URL {ontology_uri}")
                 waited = 0.0
                 reachable = False
@@ -128,6 +153,14 @@ def _get_ontology_for_tasks():
         logger.info("[Celery] Ontology loaded successfully in worker")
         _ontology_version = redis_version
         _ontology_uri_cached = redis_uri or ontology_uri
+        # store mtime if loading from local file
+        try:
+            if redis_local:
+                lp = Path(redis_local)
+                if lp.exists():
+                    _ontology_mtime = str(int(lp.stat().st_mtime))
+        except Exception:
+            pass
 
     return _ontology
 

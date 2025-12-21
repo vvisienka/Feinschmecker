@@ -28,8 +28,18 @@ def _publish_version_to_redis():
         import redis as _redis
         redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
         r = _redis.from_url(redis_url)
-        r.set('feinschmecker:ontology_version', str(int(time.time())))
-        logger.info("Published ontology_version to Redis after change")
+        ver = str(int(time.time()))
+        r.set('feinschmecker:ontology_version', ver)
+        # If we have a local ontology file configured, publish its path and a readiness flag
+        try:
+            ontology_local = current_app.config.get('ONTOLOGY_LOCAL_PATH')
+            if ontology_local:
+                r.set('feinschmecker:ontology_local', str(ontology_local))
+                r.set('feinschmecker:ontology_ready', ver)
+        except Exception:
+            logger.exception('Failed to publish ontology_local/readiness to Redis')
+
+        logger.info("Published ontology_version (and local/readiness if present) to Redis after change")
     except Exception:
         logger.exception("Failed to publish ontology version to Redis")
 
@@ -247,16 +257,30 @@ def create_recipe():
                 recipe.has_image_link.append(data.get('image_link'))
 
         # Persist ontology to disk if we have a resolved local path (downloaded or configured)
+        # Persist ontology to disk atomically if we have a resolved local path (downloaded or configured)
         try:
             ontology_local = current_app.config.get('ONTOLOGY_LOCAL_PATH')
             if ontology_local:
                 from pathlib import Path
+                import os
                 abs_path = Path(ontology_local).resolve()
-                onto.save(file=str(abs_path))
+                tmp_path = abs_path.with_suffix(abs_path.suffix + f'.part.{os.getpid()}')
+                try:
+                    onto.save(file=str(tmp_path))
+                    os.replace(str(tmp_path), str(abs_path))
+                    logger.info(f'Persisted ontology atomically to {abs_path}')
+                except Exception:
+                    logger.exception('Failed to atomically persist ontology after create')
+                finally:
+                    try:
+                        if tmp_path.exists():
+                            tmp_path.unlink()
+                    except Exception:
+                        pass
         except Exception:
             logger.exception('Failed to persist ontology to file after create')
 
-        # Publish version bump to Redis
+        # Publish version bump (and local/readiness) to Redis
         _publish_version_to_redis()
 
         return success_response(data={'id': local_name}, message='Recipe created')
@@ -438,8 +462,21 @@ def update_recipe(recipe_id):
             ontology_local = current_app.config.get('ONTOLOGY_LOCAL_PATH')
             if ontology_local:
                 from pathlib import Path
+                import os
                 abs_path = Path(ontology_local).resolve()
-                onto.save(file=str(abs_path))
+                tmp_path = abs_path.with_suffix(abs_path.suffix + f'.part.{os.getpid()}')
+                try:
+                    onto.save(file=str(tmp_path))
+                    os.replace(str(tmp_path), str(abs_path))
+                    logger.info(f'Persisted ontology atomically to {abs_path}')
+                except Exception:
+                    logger.exception('Failed to atomically persist ontology after update')
+                finally:
+                    try:
+                        if tmp_path.exists():
+                            tmp_path.unlink()
+                    except Exception:
+                        pass
         except Exception:
             logger.exception('Failed to persist ontology to file after update')
 
@@ -544,8 +581,21 @@ def delete_recipe(recipe_id):
             ontology_local = current_app.config.get('ONTOLOGY_LOCAL_PATH')
             if ontology_local:
                 from pathlib import Path
+                import os
                 abs_path = Path(ontology_local).resolve()
-                onto.save(file=str(abs_path))
+                tmp_path = abs_path.with_suffix(abs_path.suffix + f'.part.{os.getpid()}')
+                try:
+                    onto.save(file=str(tmp_path))
+                    os.replace(str(tmp_path), str(abs_path))
+                    logger.info(f'Persisted ontology atomically to {abs_path}')
+                except Exception:
+                    logger.exception('Failed to atomically persist ontology after delete')
+                finally:
+                    try:
+                        if tmp_path.exists():
+                            tmp_path.unlink()
+                    except Exception:
+                        pass
         except Exception:
             logger.exception('Failed to persist ontology to file after delete')
 
