@@ -9,6 +9,7 @@ from pathlib import Path
 
 import logging
 import uuid
+import time
 from flask import Flask, request, g
 from flask_cors import CORS
 from flask_caching import Cache
@@ -16,6 +17,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flasgger import Swagger, swag_from
 from owlready2 import get_ontology, default_world
+from owlready2.base import OwlReadyOntologyParsingError
 
 from backend.config import get_config
 
@@ -56,26 +58,180 @@ def load_ontology(app):
         ontology_path = 'data/feinschmecker.nt'
 
     try:
-        # If it's not a URL, treat it as a local file path.
-        if not (ontology_path.startswith('http://') or ontology_path.startswith('https://')):
-            # app.root_path is /app/backend/app, so project root is two levels up.
+        # If it's an HTTP(S) URL, download it into a local cache and load from there.
+        if ontology_path.startswith('http://') or ontology_path.startswith('https://'):
+            # Prepare cache directory
+            cache_dir = Path(app.config.get('ONTOLOGY_CACHE_DIR', '/tmp/owlready2_cache'))
+            cache_dir.mkdir(parents=True, exist_ok=True)
+
+            # Determine filename: prefer explicitly configured filename (should be .rdf),
+            # otherwise derive from the URL path and force .rdf extension.
+            fname = app.config.get('ONTOLOGY_CACHE_FILENAME')
+            if not fname:
+                try:
+                    from urllib.parse import urlparse
+                    parsed = urlparse(ontology_path)
+                    fname = Path(parsed.path).name or 'feinschmecker.rdf'
+                except Exception:
+                    fname = 'feinschmecker.rdf'
+
+            # Ensure .rdf extension for compatibility with Owlready2
+            if not Path(fname).suffix.lower() == '.rdf':
+                fname = Path(fname).with_suffix('.rdf').name
+
+            absolute_path = (cache_dir / fname).resolve()
+
+            # Download the remote ontology to local cache (stream and atomically replace)
+            try:
+                from urllib.request import urlopen
+                import os
+
+                app.logger.info(f"Downloading ontology from {ontology_path} to {absolute_path}")
+                resp = urlopen(ontology_path, timeout=60)
+
+                tmp_path = absolute_path.with_suffix(absolute_path.suffix + '.part')
+                try:
+                    with tmp_path.open('wb') as fh:
+                        chunk_size = 8192
+                        while True:
+                            chunk = resp.read(chunk_size)
+                            if not chunk:
+                                break
+                            fh.write(chunk)
+
+                    # atomic replace to avoid partial-read by workers
+                    if tmp_path.exists():
+                        try:
+                            os.replace(str(tmp_path), str(absolute_path))
+                            app.logger.info(f"Downloaded ontology to {absolute_path} (atomic)")
+                        except FileNotFoundError as fnf:
+                            app.logger.error(f"Atomic replace failed — part file missing: {fnf}")
+                            # If absolute already exists, continue using it; otherwise surface error
+                            if not absolute_path.exists():
+                                raise
+                        except Exception:
+                            app.logger.exception('Failed to atomically replace ontology file')
+                            if not absolute_path.exists():
+                                raise
+                    else:
+                        app.logger.error(f"Temporary download file not found: {tmp_path}")
+                        if not absolute_path.exists():
+                            raise FileNotFoundError(f"Download produced no temporary file and no cached file exists: {absolute_path}")
+                finally:
+                    if tmp_path.exists():
+                        try:
+                            tmp_path.unlink()
+                        except Exception:
+                            pass
+            except Exception as ex:
+                app.logger.exception(f"Failed to download ontology from {ontology_path}: {ex}")
+                # If download failed but a cached file exists, continue using it
+                if not absolute_path.exists():
+                    raise
+
+            ontology_uri = absolute_path.as_uri()
+
+        else:
+            # app.root_path is backend/app, so project root is two levels up.
             project_root = Path(app.root_path).parent.parent
             absolute_path = (project_root / ontology_path).resolve()
-            
             if not absolute_path.exists():
                 app.logger.error(f"Ontology file not found at resolved path: {absolute_path}")
                 raise FileNotFoundError(f"Ontology file not found: {absolute_path}")
             ontology_uri = absolute_path.as_uri()
-        else:
-            ontology_uri = ontology_path
+
+        # Save local path into config so other parts of the app can persist updates
+        try:
+            app.config['ONTOLOGY_LOCAL_PATH'] = str(absolute_path)
+        except Exception:
+            app.logger.exception('Failed to set ONTOLOGY_LOCAL_PATH')
 
         app.logger.info(f"Loading ontology from {ontology_uri}")
-        onto = get_ontology(ontology_uri).load()
-        app.logger.info("Ontology loaded successfully")
+
+        # Try to load ontology with a few retries — this helps if workers race and
+        # a file replace overlaps parsing attempts (transient partial reads).
+        max_retries = int(app.config.get('ONTOLOGY_LOAD_RETRIES', 3))
+        retry_delay = float(app.config.get('ONTOLOGY_LOAD_RETRY_DELAY', 2.0))
+        last_exc = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                onto = get_ontology(ontology_uri).load()
+                app.logger.info("Ontology loaded successfully")
+                last_exc = None
+                break
+            except OwlReadyOntologyParsingError as oe:
+                last_exc = oe
+                app.logger.warning(f"Ontology parse failed (attempt {attempt}/{max_retries}): {oe}")
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
+                else:
+                    raise
+            except Exception as ex:
+                last_exc = ex
+                app.logger.exception(f"Unexpected error while loading ontology (attempt {attempt}/{max_retries}): {ex}")
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
+                else:
+                    raise
+
+        # Notify workers about the loaded ontology by writing the
+        # ontology source URI (original URL if remote, or file URI) and a version token into Redis.
+        try:
+            import os
+            import redis as _redis
+            redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
+            r = _redis.from_url(redis_url)
+            # If the configured ONTOLOGY_URL was remote, publish that original HTTP(S) URL
+            # so workers load from the authoritative source. Otherwise publish the
+            # local file URI.
+            source_uri = ontology_path if (isinstance(ontology_path, str) and (ontology_path.startswith('http://') or ontology_path.startswith('https://'))) else ontology_uri
+            r.set('feinschmecker:ontology_uri', source_uri)
+            # Use a monotonically increasing version token (timestamp)
+            r.set('feinschmecker:ontology_version', str(int(__import__('time').time())))
+            app.logger.info("Published ontology_uri and ontology_version to Redis for workers")
+        except Exception:
+            app.logger.exception("Failed to publish ontology version to Redis")
+
         return onto
     except Exception as e:
+        # Don't crash the entire WSGI process if Owlready2 fails to parse the RDF/XML.
+        # Instead, capture diagnostic information, persist a copy for inspection,
+        # surface a config flag so other parts of the app know the ontology isn't loaded,
+        # and allow the app to continue running in a degraded mode.
         app.logger.error(f"Failed to load ontology from {ontology_path}: {str(e)}", exc_info=True)
-        raise
+
+        # Mark that loading failed so callers can detect degraded mode
+        try:
+            app.config['ONTOLOGY_LOAD_ERROR'] = True
+        except Exception:
+            pass
+
+        # Attempt to capture first lines of the cached file for quicker debugging
+        try:
+            if 'absolute_path' in locals() and absolute_path.exists():
+                # Read a bounded portion to avoid huge logs
+                text = absolute_path.read_text(errors='replace')
+                head_lines = text.splitlines()[:80]
+                app.logger.error('--- Begin cached RDF head (first 80 lines) ---')
+                for i, ln in enumerate(head_lines, start=1):
+                    app.logger.error(f"{i:04d}: {ln}")
+                app.logger.error('--- End cached RDF head ---')
+
+                # Save a diagnostic copy into the Flask instance folder for easier retrieval
+                try:
+                    diag_dir = Path(app.instance_path)
+                    diag_dir.mkdir(parents=True, exist_ok=True)
+                    diag_file = diag_dir / f"feinschmecker_failed_{int(__import__('time').time())}.rdf"
+                    diag_file.write_text(text, errors='replace')
+                    app.logger.error(f"Saved diagnostic copy to {diag_file}")
+                except Exception:
+                    app.logger.exception('Failed to write diagnostic copy of cached RDF')
+        except Exception:
+            app.logger.exception('Failed to read cached ontology file for diagnostics')
+
+        # Ensure global onto remains None, and return gracefully
+        onto = None
+        return None
 
 
 def create_app(config_name=None):

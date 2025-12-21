@@ -5,6 +5,7 @@
   import SearchSection from "../components/SearchSection.vue"
   import RecipesSection from "../components/RecipesSection.vue"
   import KnowledgeGraphUpload from "../components/KnowledgeGraphUpload.vue"
+  import AddRecipe from "../components/AddRecipe.vue"
   export default {
     components: {
       Navbar,
@@ -12,7 +13,8 @@
       AboutUs,
       SearchSection,
       RecipesSection,
-      KnowledgeGraphUpload
+      KnowledgeGraphUpload,
+      AddRecipe
     },
 
     data() {
@@ -58,6 +60,7 @@
   <HeroHeader @scrollToAboutUs="scrollToAboutUs" @scrollToSearchSection="scrollToSearchSection" v-motion-slide-right/>
   <AboutUs ref="aboutUs"/>
   <KnowledgeGraphUpload @graphUploaded="handleGraphUploaded" />
+  <AddRecipe @recipeAdded="handleGraphUploaded" />
   <SearchSection id="search-section" ref="searchSection" @searched="handleSearchAction"/>
   <RecipesSection @loadMoreRecipes="handleLoadMoreRecipes" :recipes="this.recipes" :maxRecipesShown="maxRecipesShown"/>
 </template>

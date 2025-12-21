@@ -19,7 +19,10 @@ class Config:
         'ONTOLOGY_URL',
         'https://jaron.sprute.com/uni/actionable-knowledge-representation/feinschmecker/feinschmecker.rdf'
     )
+    # Default cache directory for downloaded ontology (temporary by default)
     ONTOLOGY_CACHE_DIR = os.getenv('ONTOLOGY_CACHE_DIR', '/tmp/owlready2_cache')
+    # Default cache filename for the downloaded ontology (always .rdf)
+    ONTOLOGY_CACHE_FILENAME = os.getenv('ONTOLOGY_CACHE_FILENAME', 'feinschmecker.rdf')
     
     # API settings
     API_TITLE = 'Feinschmecker API'
@@ -35,8 +38,10 @@ class Config:
     
     # CORS settings
     CORS_ORIGINS = os.getenv('CORS_ORIGINS', '*')
-    CORS_METHODS = ['GET', 'OPTIONS']
-    CORS_ALLOW_HEADERS = ['Content-Type', 'Authorization']
+    # Allow common HTTP methods used by the frontend (including preflight OPTIONS)
+    CORS_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
+    # Allow common headers including Content-Type for JSON requests
+    CORS_ALLOW_HEADERS = ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
     
     # Cache settings
     CACHE_TYPE = 'SimpleCache'
