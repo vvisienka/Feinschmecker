@@ -10,19 +10,20 @@ import logging
 import time
 import os
 from flask import request, current_app
-from owlready2 import default_world
-
 from backend.app.api import api_bp
-from backend.app.utils.response import success_response, error_response, validation_error_response
-from backend.app import limiter
+from backend.app import limiter, cache
+from backend.app.utils.response import (
+    success_response,
+    validation_error_response,
+    error_response,
+)
+from owlready2 import default_world, destroy_entity
 
 logger = logging.getLogger(__name__)
 
 
 def _sanitize_name(name: str) -> str:
     return str(name).lower().replace(" ", "_").replace("%", "percent").replace("&", "and")
-
-
 def _publish_version_to_redis():
     try:
         import redis as _redis
@@ -83,11 +84,29 @@ def create_recipe():
     if not title:
         return validation_error_response([{'field': 'title', 'message': 'Title is required'}])
 
+    # Require at least one meaningful resource so users don't create empty recipes
+    has_instructions = bool(data.get('instructions') and str(data.get('instructions')).strip())
+    has_ingredients = False
+    if data.get('ingredients'):
+        ings = data.get('ingredients')
+        if isinstance(ings, list):
+            has_ingredients = len(ings) > 0
+        elif isinstance(ings, str):
+            has_ingredients = bool(ings.strip())
+    has_link = bool(data.get('link') and str(data.get('link')).strip())
+    if not (has_instructions or has_ingredients or has_link):
+        return validation_error_response([
+            {'field': 'body', 'message': 'Provide at least one of: instructions, ingredients or link'}
+        ])
+
     from backend.app import get_ontology_instance
 
     onto = get_ontology_instance()
     if onto is None:
         return error_response('No ontology loaded', code='NO_ONTOLOGY', status_code=500)
+
+    # Make placeholder creation opt-in via app config. Default: disabled.
+    create_placeholders = current_app.config.get('CREATE_PLACEHOLDERS', False)
 
     local_name = _sanitize_name(title)
     if _get_individual(onto, local_name) is not None:
@@ -104,8 +123,14 @@ def create_recipe():
             # Required data properties
             if hasattr(recipe, 'has_recipe_name'):
                 recipe.has_recipe_name.append(title)
-            if hasattr(recipe, 'has_instructions') and data.get('instructions'):
-                recipe.has_instructions.append(str(data.get('instructions')))
+            # Ensure instructions present (use provided or placeholder)
+            if hasattr(recipe, 'has_instructions'):
+                if data.get('instructions'):
+                    recipe.has_instructions.append(str(data.get('instructions')))
+                else:
+                    # placeholder so SPARQL required pattern matches
+                    if not list(recipe.has_instructions):
+                        recipe.has_instructions.append('')
             if hasattr(recipe, 'is_vegan'):
                 recipe.is_vegan.append(bool(data.get('vegan', False)))
             if hasattr(recipe, 'is_vegetarian'):
@@ -196,6 +221,27 @@ def create_recipe():
                             iwam_inst.type_of_ingredient.append(ingredient_inst)
                         recipe.has_ingredient.append(iwam_inst)
 
+            else:
+                # Optional: ensure at least one placeholder ingredient so SPARQL matches
+                if create_placeholders:
+                    try:
+                        IngredientClass = _find_class(onto, 'Ingredient')
+                        IngredientWithAmount = _find_class(onto, 'IngredientWithAmount')
+                        if IngredientWithAmount and IngredientClass:
+                            ph_name = f"{local_name}_ingredient_placeholder"
+                            ph_iwam = IngredientWithAmount(ph_name)
+                            if hasattr(ph_iwam, 'has_ingredient_with_amount_name') and not getattr(ph_iwam, 'has_ingredient_with_amount_name'):
+                                ph_iwam.has_ingredient_with_amount_name.append('ingredient')
+                            ph_ing = IngredientClass(f"{local_name}_ingredient_base")
+                            if hasattr(ph_ing, 'has_ingredient_name') and not getattr(ph_ing, 'has_ingredient_name'):
+                                ph_ing.has_ingredient_name.append('ingredient')
+                            if hasattr(ph_iwam, 'type_of_ingredient'):
+                                ph_iwam.type_of_ingredient.append(ph_ing)
+                            if hasattr(recipe, 'has_ingredient'):
+                                recipe.has_ingredient.append(ph_iwam)
+                    except Exception:
+                        pass
+
             # Nutrients (required)
             NutrientsMap = [
                 ('Calories', 'has_calories', 'amount_of_calories'),
@@ -228,6 +274,65 @@ def create_recipe():
                         if hasattr(recipe, prop_name):
                             getattr(recipe, prop_name).append(inst)
 
+            # Ensure default placeholders for required fields when not provided (opt-in)
+            if create_placeholders:
+                try:
+                    # Time placeholder (0 minutes) if missing
+                    if hasattr(recipe, 'requires_time') and not list(recipe.requires_time):
+                        TimeClass = _find_class(onto, 'Time')
+                        if TimeClass:
+                            tname = f"time_{local_name}_placeholder"
+                            tinst = TimeClass(tname)
+                            if hasattr(tinst, 'amount_of_time') and not getattr(tinst, 'amount_of_time'):
+                                tinst.amount_of_time.append(0)
+                            recipe.requires_time.append(tinst)
+
+                    # Difficulty placeholder (0) if missing
+                    if hasattr(recipe, 'has_difficulty') and not list(recipe.has_difficulty):
+                        DifficultyClass = _find_class(onto, 'Difficulty')
+                        if DifficultyClass:
+                            dname = f"difficulty_{local_name}_placeholder"
+                            dinst = DifficultyClass(dname)
+                            if hasattr(dinst, 'has_numeric_difficulty') and not getattr(dinst, 'has_numeric_difficulty'):
+                                dinst.has_numeric_difficulty.append(0)
+                            recipe.has_difficulty.append(dinst)
+
+                    # Ensure nutrients exist (0) if not provided
+                    for cls_name, prop_name, amount_prop in NutrientsMap:
+                        if hasattr(recipe, prop_name) and not list(getattr(recipe, prop_name)):
+                            cls = _find_class(onto, cls_name)
+                            if cls:
+                                iname = f"{cls_name.lower()}_0_placeholder"
+                                inst = cls(iname)
+                                if hasattr(inst, amount_prop) and not getattr(inst, amount_prop):
+                                    try:
+                                        getattr(inst, amount_prop).append(0.0)
+                                    except Exception:
+                                        pass
+                                getattr(recipe, prop_name).append(inst)
+
+                    # Ensure author/source placeholders exist
+                    if (hasattr(recipe, 'authored_by') and not list(recipe.authored_by)) or (hasattr(recipe, 'authored_by') and not list(recipe.authored_by)):
+                        AuthorClass = _find_class(onto, 'Author')
+                        SourceClass = _find_class(onto, 'Source')
+                        if AuthorClass and SourceClass:
+                            aname = f"{local_name}_author_placeholder"
+                            sname = f"{local_name}_source_placeholder"
+                            source_inst = SourceClass(sname)
+                            if hasattr(source_inst, 'has_source_name') and not getattr(source_inst, 'has_source_name'):
+                                source_inst.has_source_name.append('')
+                            if hasattr(source_inst, 'is_website') and not getattr(source_inst, 'is_website'):
+                                source_inst.is_website.append('')
+                            author_inst = AuthorClass(aname)
+                            if hasattr(author_inst, 'has_author_name') and not getattr(author_inst, 'has_author_name'):
+                                author_inst.has_author_name.append('')
+                            if hasattr(author_inst, 'is_author_of'):
+                                author_inst.is_author_of.append(source_inst)
+                            if hasattr(recipe, 'authored_by'):
+                                recipe.authored_by.append(author_inst)
+                except Exception:
+                    logger.exception('Failed to create default placeholders for recipe')
+
             # Author and Source
             if 'author' in data and (hasattr(recipe, 'authored_by') or hasattr(recipe, 'has_author')):
                 AuthorClass = _find_class(onto, 'Author')
@@ -250,14 +355,29 @@ def create_recipe():
                     if hasattr(recipe, 'authored_by'):
                         recipe.authored_by.append(author_inst)
 
-            # Links (optional)
+            # Links (optional) — only add placeholders if configured
             if 'link' in data and hasattr(recipe, 'has_link') and data.get('link'):
                 recipe.has_link.append(data.get('link'))
+            else:
+                if create_placeholders and hasattr(recipe, 'has_link') and not list(recipe.has_link):
+                    recipe.has_link.append('')
+
             if 'image_link' in data and hasattr(recipe, 'has_image_link') and data.get('image_link'):
                 recipe.has_image_link.append(data.get('image_link'))
+            else:
+                if create_placeholders and hasattr(recipe, 'has_image_link') and not list(recipe.has_image_link):
+                    recipe.has_image_link.append('')
 
-        # Persist ontology to disk if we have a resolved local path (downloaded or configured)
-        # Persist ontology to disk atomically if we have a resolved local path (downloaded or configured)
+        # Log recipe count before saving for diagnostics
+        try:
+            recipe_class = _find_class(onto, 'Recipe')
+            if recipe_class:
+                recipe_count = len(list(recipe_class.instances()))
+                logger.info(f"Ontology contains {recipe_count} recipe individuals before saving.")
+        except Exception:
+            logger.exception("Failed to count recipe individuals before saving.")
+
+        # Persist ontology to disk atomically
         try:
             ontology_local = current_app.config.get('ONTOLOGY_LOCAL_PATH')
             if ontology_local:
@@ -266,22 +386,32 @@ def create_recipe():
                 abs_path = Path(ontology_local).resolve()
                 tmp_path = abs_path.with_suffix(abs_path.suffix + f'.part.{os.getpid()}')
                 try:
-                    onto.save(file=str(tmp_path))
+                    default_world.save(file=str(tmp_path))
                     os.replace(str(tmp_path), str(abs_path))
                     logger.info(f'Persisted ontology atomically to {abs_path}')
                 except Exception:
                     logger.exception('Failed to atomically persist ontology after create')
+                    try:
+                        if Path(tmp_path).exists():
+                            Path(tmp_path).unlink(missing_ok=True)
+                    except Exception:
+                        logger.exception('Failed to cleanup tmp ontology file after failed create persist')
+                    return error_response(message='Failed to persist ontology to disk', code='PERSIST_FAILED', status_code=500)
                 finally:
                     try:
-                        if tmp_path.exists():
-                            tmp_path.unlink()
+                        if Path(tmp_path).exists():
+                            Path(tmp_path).unlink(missing_ok=True)
                     except Exception:
-                        pass
+                        logger.exception('Failed to cleanup tmp ontology file after create')
         except Exception:
             logger.exception('Failed to persist ontology to file after create')
+            return error_response(message='Failed to persist ontology to disk', code='PERSIST_FAILED', status_code=500)
 
         # Publish version bump (and local/readiness) to Redis
         _publish_version_to_redis()
+
+        # Invalidate the API cache to ensure fresh data is served
+        cache.clear()
 
         return success_response(data={'id': local_name}, message='Recipe created')
 
@@ -458,6 +588,70 @@ def update_recipe(recipe_id):
                             iwam_inst.type_of_ingredient.append(ingredient_inst)
                         individual.has_ingredient.append(iwam_inst)
 
+                # Ensure defaults exist after update if some required triples were removed/not provided
+                try:
+                    # vegan/vegetarian defaults
+                    if hasattr(individual, 'is_vegan') and not list(individual.is_vegan):
+                        individual.is_vegan.append(False)
+                    if hasattr(individual, 'is_vegetarian') and not list(individual.is_vegetarian):
+                        individual.is_vegetarian.append(False)
+
+                    # time placeholder
+                    if hasattr(individual, 'requires_time') and not list(individual.requires_time):
+                        TimeClass = _find_class(onto, 'Time')
+                        if TimeClass:
+                            tname = f"time_{recipe_id}_placeholder"
+                            tinst = TimeClass(tname)
+                            if hasattr(tinst, 'amount_of_time') and not getattr(tinst, 'amount_of_time'):
+                                tinst.amount_of_time.append(0)
+                            individual.requires_time.append(tinst)
+
+                    # difficulty placeholder
+                    if hasattr(individual, 'has_difficulty') and not list(individual.has_difficulty):
+                        DifficultyClass = _find_class(onto, 'Difficulty')
+                        if DifficultyClass:
+                            dname = f"difficulty_{recipe_id}_placeholder"
+                            dinst = DifficultyClass(dname)
+                            if hasattr(dinst, 'has_numeric_difficulty') and not getattr(dinst, 'has_numeric_difficulty'):
+                                dinst.has_numeric_difficulty.append(0)
+                            individual.has_difficulty.append(dinst)
+
+                    # nutrients defaults
+                    for cls_name, prop_name, amount_prop, field in NutrientsMap:
+                        if hasattr(individual, prop_name) and not list(getattr(individual, prop_name)):
+                            cls = _find_class(onto, cls_name)
+                            if cls:
+                                iname = f"{cls_name.lower()}_0_placeholder_{recipe_id}"
+                                inst = cls(iname)
+                                if hasattr(inst, amount_prop) and not getattr(inst, amount_prop):
+                                    try:
+                                        getattr(inst, amount_prop).append(0.0)
+                                    except Exception:
+                                        pass
+                                getattr(individual, prop_name).append(inst)
+
+                    # author/source placeholders
+                    if hasattr(individual, 'authored_by') and not list(individual.authored_by):
+                        AuthorClass = _find_class(onto, 'Author')
+                        SourceClass = _find_class(onto, 'Source')
+                        if AuthorClass and SourceClass:
+                            aname = f"{recipe_id}_author_placeholder"
+                            sname = f"{recipe_id}_source_placeholder"
+                            source_inst = SourceClass(sname)
+                            if hasattr(source_inst, 'has_source_name') and not getattr(source_inst, 'has_source_name'):
+                                source_inst.has_source_name.append('')
+                            if hasattr(source_inst, 'is_website') and not getattr(source_inst, 'is_website'):
+                                source_inst.is_website.append('')
+                            author_inst = AuthorClass(aname)
+                            if hasattr(author_inst, 'has_author_name') and not getattr(author_inst, 'has_author_name'):
+                                author_inst.has_author_name.append('')
+                            if hasattr(author_inst, 'is_author_of'):
+                                author_inst.is_author_of.append(source_inst)
+                            if hasattr(individual, 'authored_by'):
+                                individual.authored_by.append(author_inst)
+                except Exception:
+                    logger.exception('Failed to ensure default placeholders after update')
+
         try:
             ontology_local = current_app.config.get('ONTOLOGY_LOCAL_PATH')
             if ontology_local:
@@ -466,21 +660,32 @@ def update_recipe(recipe_id):
                 abs_path = Path(ontology_local).resolve()
                 tmp_path = abs_path.with_suffix(abs_path.suffix + f'.part.{os.getpid()}')
                 try:
-                    onto.save(file=str(tmp_path))
+                    # use default_world.save() to persist the full world consistently
+                    default_world.save(file=str(tmp_path))
                     os.replace(str(tmp_path), str(abs_path))
                     logger.info(f'Persisted ontology atomically to {abs_path}')
                 except Exception:
                     logger.exception('Failed to atomically persist ontology after update')
+                    try:
+                        if Path(tmp_path).exists():
+                            Path(tmp_path).unlink(missing_ok=True)
+                    except Exception:
+                        logger.exception('Failed to cleanup tmp ontology file after failed update persist')
+                    return error_response(message='Failed to persist ontology to disk', code='PERSIST_FAILED', status_code=500)
                 finally:
                     try:
-                        if tmp_path.exists():
-                            tmp_path.unlink()
+                        if Path(tmp_path).exists():
+                            Path(tmp_path).unlink(missing_ok=True)
                     except Exception:
-                        pass
+                        logger.exception('Failed to cleanup tmp ontology file after update')
         except Exception:
             logger.exception('Failed to persist ontology to file after update')
+            return error_response(message='Failed to persist ontology to disk', code='PERSIST_FAILED', status_code=500)
 
         _publish_version_to_redis()
+
+        # Invalidate the API cache to ensure fresh data is served
+        cache.clear()
 
         return success_response(message='Recipe updated')
 
@@ -501,82 +706,26 @@ def delete_recipe(recipe_id):
     if individual is None:
         return validation_error_response([{'field': 'id', 'message': 'Recipe not found'}])
 
+    logger.info(f"Attempting to delete recipe individual: {individual.name}")
+
     try:
-        # Collect linked instances to possibly cleanup (nutrients, time, ingredientWithAmount)
-        linked = {
-            'ingredients': list(individual.has_ingredient) if hasattr(individual, 'has_ingredient') else [],
-            'calories': list(individual.has_calories) if hasattr(individual, 'has_calories') else [],
-            'protein': list(individual.has_protein) if hasattr(individual, 'has_protein') else [],
-            'fat': list(individual.has_fat) if hasattr(individual, 'has_fat') else [],
-            'carbohydrates': list(individual.has_carbohydrates) if hasattr(individual, 'has_carbohydrates') else [],
-            'time': list(individual.requires_time) if hasattr(individual, 'requires_time') else [],
-        }
-
-        # remove individual from ontology
+        # Using destroy_entity is the recommended way to remove an individual and all its references.
+        # It handles the cleanup of relationships automatically.
         with onto:
-            # detach links first
-            try:
-                # clear relationships from recipe
-                if hasattr(individual, 'has_ingredient'):
-                    for i in list(individual.has_ingredient):
-                        try:
-                            individual.has_ingredient.remove(i)
-                        except Exception:
-                            pass
-                for prop in ('has_calories', 'has_protein', 'has_fat', 'has_carbohydrates', 'requires_time'):
-                    if hasattr(individual, prop):
-                        for v in list(getattr(individual, prop)):
-                            try:
-                                getattr(individual, prop).remove(v)
-                            except Exception:
-                                pass
-            except Exception:
-                logger.exception('Error detaching linked instances')
+            destroy_entity(individual)
+        
+        logger.info(f"Successfully deleted recipe: {recipe_id}")
 
-            default_world.remove_entity(individual)
-
-        # cleanup orphaned linked instances if they have no backrefs
-        def _cleanup(inst, inverse_attr_names):
-            try:
-                for inv in inverse_attr_names:
-                    if hasattr(inst, inv) and list(getattr(inst, inv)):
-                        return
-                # no inverse links -> remove
-                default_world.remove_entity(inst)
-            except Exception:
-                pass
-
-        # cleanup ingredientWithAmount entries
-        for i in linked['ingredients']:
-            try:
-                # IngredientWithAmount has inverse 'used_for'
-                if hasattr(i, 'used_for') and not list(i.used_for):
-                    default_world.remove_entity(i)
-            except Exception:
-                pass
-
-        # cleanup nutrients and time if orphaned
-        for n in linked['calories'] + linked['protein'] + linked['fat'] + linked['carbohydrates']:
-            try:
-                # check inverse property (e.g., calories_of)
-                invs = [a for a in dir(n.__class__) if a.endswith('_of')]
-                orphan = True
-                for inv in invs:
-                    if hasattr(n, inv) and list(getattr(n, inv)):
-                        orphan = False
-                        break
-                if orphan:
-                    default_world.remove_entity(n)
-            except Exception:
-                pass
-
-        for t in linked['time']:
-            try:
-                if hasattr(t, 'time_required_by') and not list(t.time_required_by):
-                    default_world.remove_entity(t)
-            except Exception:
-                pass
-
+        # Log recipe count before saving for diagnostics
+        try:
+            recipe_class = _find_class(onto, 'Recipe')
+            if recipe_class:
+                recipe_count = len(list(recipe_class.instances()))
+                logger.info(f"Ontology contains {recipe_count} recipe individuals before saving.")
+        except Exception:
+            logger.exception("Failed to count recipe individuals before saving.")
+            
+        # Persist the changes to the ontology file
         try:
             ontology_local = current_app.config.get('ONTOLOGY_LOCAL_PATH')
             if ontology_local:
@@ -585,24 +734,35 @@ def delete_recipe(recipe_id):
                 abs_path = Path(ontology_local).resolve()
                 tmp_path = abs_path.with_suffix(abs_path.suffix + f'.part.{os.getpid()}')
                 try:
-                    onto.save(file=str(tmp_path))
+                    default_world.save(file=str(tmp_path))
                     os.replace(str(tmp_path), str(abs_path))
-                    logger.info(f'Persisted ontology atomically to {abs_path}')
+                    logger.info(f'Persisted ontology atomically to {abs_path} after delete.')
                 except Exception:
-                    logger.exception('Failed to atomically persist ontology after delete')
+                    logger.exception('Failed to atomically persist ontology after delete.')
+                    try:
+                        if Path(tmp_path).exists():
+                            Path(tmp_path).unlink(missing_ok=True)
+                    except Exception:
+                        logger.exception('Failed to cleanup tmp ontology file after failed delete persist')
+                    return error_response(message='Failed to persist ontology to disk', code='PERSIST_FAILED', status_code=500)
                 finally:
                     try:
-                        if tmp_path.exists():
-                            tmp_path.unlink()
+                        if Path(tmp_path).exists():
+                            Path(tmp_path).unlink(missing_ok=True)
                     except Exception:
-                        pass
+                        logger.exception('Failed to cleanup tmp ontology file after delete')
         except Exception:
-            logger.exception('Failed to persist ontology to file after delete')
+            logger.exception('Failed to persist ontology to file after delete.')
+            return error_response(message='Failed to persist ontology to disk', code='PERSIST_FAILED', status_code=500)
 
+        # Notify workers of the change
         _publish_version_to_redis()
 
-        return success_response(message='Recipe deleted')
+        # Invalidate the API cache to ensure fresh data is served
+        cache.clear()
+
+        return success_response(message='Recipe deleted successfully')
 
     except Exception as e:
-        logger.exception('Failed to delete recipe')
+        logger.exception(f"An error occurred while trying to delete recipe: {recipe_id}")
         return error_response(message=str(e), code='DELETE_FAILED', status_code=500)

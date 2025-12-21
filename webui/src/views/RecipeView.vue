@@ -1,14 +1,18 @@
 <script>
   import MacronutrientsSummary from "../components/MacronutrientsSummary.vue"
+  import EditRecipeModal from "../components/EditRecipeModal.vue"
   import { nextTick } from "vue";
   export default {
     components: {
       MacronutrientsSummary
+      ,EditRecipeModal
     },
     data() {
       return {
         recipe: null,
         recipeNotFound: false
+        ,
+        showEditModal: false
       }
     },
 
@@ -48,6 +52,29 @@
         }
         return [];
       }
+      ,
+      async onDelete(){
+        if(!this.recipe) return
+        const id = String(this.recipe.name || this.recipe.id || '')
+        const sanitized = id.toLowerCase().replace(/ /g, '_').replace(/%/g, 'percent').replace(/&/g, 'and')
+        if(!confirm('Are you sure you want to delete this recipe? This action cannot be undone.')) return
+        try{
+          const axios = (await import('../../services/axios')).default
+          await axios.delete(`/recipes/crud/${sanitized}`)
+          // remove localStorage and go back
+          localStorage.removeItem('current_recipe')
+          this.$router.push({name: 'Home', hash:'#search-section'});
+        }catch(err){
+          console.error('Delete failed', err)
+          alert('Failed to delete recipe')
+        }
+      },
+      onEdit(){
+        this.showEditModal = true
+      },
+      onSaved(updated){
+        this.recipe = updated
+      }
     },
     mounted() {
       window.scrollTo(0, 0);
@@ -61,6 +88,8 @@
     <div class="left-container">
       <div class="button-container">
         <button @click="goBack">Back</button>
+        <button @click="onEdit">Edit</button>
+        <button @click="onDelete">Delete</button>
       </div>
       <div class="recipe-info-box">
         <img :src="recipe.image_link" :alt="recipe.name"/>
@@ -85,6 +114,7 @@
         </div> 
       </div>
     </div>
+    <EditRecipeModal v-if="showEditModal" :recipe="recipe" @close="showEditModal=false" @saved="onSaved"/>
   </div>
   <div class="error-container" v-else-if="recipeNotFound">
     <h1>Recipe Not Found</h1>

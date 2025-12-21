@@ -52,7 +52,11 @@ class RecipeService:
         
         # Get total count (for pagination metadata)
         total_count = self._get_total_count(filters)
-        logger.info(f"Found {total_count} total recipes matching filters")
+        # Also compute how many recipe individuals exist in the ontology
+        searched_total = self._count_total_recipes_in_ontology()
+        logger.info(
+            f"Found {total_count} total recipes matching filters (searched {searched_total} recipes in ontology)"
+        )
         
         # Build and execute main query
         query = self.query_builder.build_query(filters, limit=per_page, offset=offset)
@@ -68,7 +72,10 @@ class RecipeService:
         recipes = self._transform_results(recipe_list)
         
         elapsed_time = time.time() - start_time
-        logger.info(f"Retrieved {len(recipes)} recipes in {elapsed_time:.3f}s")
+        logger.info(
+            f"Retrieved {len(recipes)} recipes (page={page}, per_page={per_page}) out of {total_count} matching filters; "
+            f"searched {searched_total} recipes in ontology in {elapsed_time:.3f}s"
+        )
         
         if elapsed_time > 1.0:
             logger.warning(f"Slow query detected: {elapsed_time:.3f}s")
@@ -96,6 +103,22 @@ class RecipeService:
         except Exception as e:
             logger.error(f"Count query failed: {str(e)}")
             # Fall back to returning 0 if count fails
+            return 0
+
+    def _count_total_recipes_in_ontology(self) -> int:
+        """
+        Count total number of `Recipe` individuals present in the ontology.
+
+        Returns:
+            Integer count of recipe individuals or 0 on failure.
+        """
+        try:
+            for c in self.ontology.classes():
+                if c.name == 'Recipe':
+                    return len(list(c.instances()))
+            return 0
+        except Exception:
+            logger.exception("Failed to count total recipe individuals in ontology")
             return 0
     
     def _transform_results(self, recipe_list: List[tuple]) -> List[Dict[str, Any]]:

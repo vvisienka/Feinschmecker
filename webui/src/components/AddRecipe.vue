@@ -50,6 +50,9 @@
         <label>Source link</label>
         <input v-model="form.source_link" />
 
+        <label>Link</label>
+        <input v-model="form.link" placeholder="http://..." />
+
         <label>Image link</label>
         <input v-model="form.image_link" />
 
@@ -98,6 +101,7 @@ export default {
         author: '',
         source_name: '',
         source_link: '',
+        link: '',
         meal_type: '',
         difficulty: 1,
         vegan: false,
@@ -170,7 +174,7 @@ export default {
     },
     resetForm() {
       this.form = {
-        title: '', instructions: '', time: null, author: '', source_name: '', source_link: '',
+        title: '', instructions: '', time: null, author: '', source_name: '', source_link: '', link: '',
         meal_type: '', difficulty: 1, vegan: false, vegetarian: false,
         calories: null, protein: null, fat: null, carbohydrates: null, image_link: ''
       }
