@@ -1,23 +1,21 @@
 """
 Ontology initialization and namespace setup for the Feinschmecker recipe ontology.
 
-This module supports multiple knowledge graphs:
-- schema_onto: Contains the TBox (classes, properties, constraints)
-- Multiple KG ontologies: Each contains ABox (individuals/instances) and imports the schema
-- create_kg(): Factory function to create new knowledge graphs for different sources
+Unified Version: Forces Schema and KG to share the same namespace to match existing .nt data.
 """
 
 from owlready2 import get_ontology
+import os
 
-# Namespace base
-NAMESPACE = "https://jaron.sprute.com/uni/actionable-knowledge-representation/feinschmecker"
+# --- KEY FIX: Base Namespace matches your existing .nt file data ---
+# No /schema/ or /kg/ suffixes for the main ontology to ensure queries find the data.
+NAMESPACE = "https://jaron.sprute.com/uni/actionable-knowledge-representation/feinschmecker/"
 
-# Schema ontology (TBox) - classes, properties, constraints
-schema_onto = get_ontology(NAMESPACE + "/schema/")
-schema_onto.destroy(update_relation=True, update_is_a=True)
-schema_onto = get_ontology(NAMESPACE + "/schema/")
+# Schema ontology (TBox)
+# Initialized to the base namespace so classes like Recipe get the correct URI
+schema_onto = get_ontology(NAMESPACE)
 
-# Add schema metadata
+# --- RESTORED METADATA ---
 schema_onto.metadata.comment.append("Schema (TBox) for the Feinschmecker recipe ontology.")
 schema_onto.metadata.comment.append("This ontology defines classes, properties, and constraints for recipe knowledge representation.")
 schema_onto.metadata.comment.append("This ontology was made by Jaron Sprute, Bhuvenesh Verma and Szymon Czajkowski.")
@@ -26,55 +24,50 @@ schema_onto.metadata.versionInfo.append("Version: 2.0 - Schema separated from kn
 # Registry of knowledge graphs
 knowledge_graphs = {}
 
-
 def create_kg(source_name: str = "default", destroy_existing: bool = False):
     """
     Create a new knowledge graph ontology for a specific data source.
     
-    All knowledge graphs import the schema ontology, allowing multiple
-    independent datasets to share the same class/property definitions.
-    
-    Args:
-        source_name: Identifier for this knowledge graph (e.g., "bbc", "allrecipes")
-        destroy_existing: If True, destroy and recreate if KG already exists
-    
-    Returns:
-        Knowledge graph ontology that imports schema_onto
-    
-    Example:
-        kg_bbc = create_kg("bbc")
-        load_recipes_from_json('bbc_recipes.json', target_kg=kg_bbc)
-        kg_bbc.save('kg-bbc.rdf')
+    For 'default', it uses the base NAMESPACE to align with existing data.
     """
+    # 1. Determine IRI
+    if source_name == "default":
+        # Force default KG to share namespace with Schema and Data
+        iri = NAMESPACE
+    else:
+        # Other sources can keep their own sub-namespaces if needed
+        iri = NAMESPACE + f"kg/{source_name}/"
+
+    # 2. Return existing if loaded
     if source_name in knowledge_graphs and not destroy_existing:
         return knowledge_graphs[source_name]
     
-    # Create knowledge graph with source-specific namespace
-    kg = get_ontology(NAMESPACE + f"/kg/{source_name}/")
+    # 3. Create/Get Ontology
+    kg = get_ontology(iri)
     
     if destroy_existing:
+        # Note: Be careful destroying 'default' as it clears the Schema too in this unified setup
         kg.destroy(update_relation=True, update_is_a=True)
-        kg = get_ontology(NAMESPACE + f"/kg/{source_name}/")
+        kg = get_ontology(iri)
     
-    # Add metadata
+    # 4. Add Metadata (Restored)
     kg.metadata.comment.append(f"Knowledge graph (ABox) for {source_name} recipes.")
     kg.metadata.comment.append("This ontology contains recipe instances and data.")
     kg.metadata.comment.append("This ontology was made by Jaron Sprute, Bhuvenesh Verma and Szymon Czajkowski.")
     kg.metadata.versionInfo.append("Version: 2.0 - Multi-source knowledge graph support")
     
-    # Establish import relationship: knowledge graph imports schema
-    if schema_onto not in kg.imported_ontologies:
+    # 5. Import Schema
+    # Only append if they are actually different objects (for non-default KGs)
+    if kg is not schema_onto and schema_onto not in kg.imported_ontologies:
         kg.imported_ontologies.append(schema_onto)
     
-    # Register in global registry
+    # 6. Register
     knowledge_graphs[source_name] = kg
     
     return kg
 
+# Default knowledge graph
+kg_onto = create_kg("default", destroy_existing=False)
 
-# Default knowledge graph (backward compatibility)
-kg_onto = create_kg("default", destroy_existing=False) #Changed to make change in data possible
-
-# Backward compatibility alias (deprecated)
+# Backward compatibility alias
 onto = kg_onto
-
