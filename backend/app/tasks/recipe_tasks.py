@@ -31,27 +31,38 @@ _ontology_mtime = None
 
 def _get_ontology_for_tasks():
     """
-    Load ontology with persistence priority:
-    1. Local File (ONTOLOGY_PATH) -> Contains latest User edits.
-    2. Web URL (ONTOLOGY_URL) -> Fallback for fresh setup.
+    Load ontology with 'Reset on Reload' logic.
+    
+    Every time the worker starts (App Reload), it will:
+    1. Fetch the fresh base ontology from the URL (RDF/XML).
+    2. Overwrite the local .nt file (Factory Reset).
+    3. Load it into memory for the session.
     """
     global _ontology
     if _ontology is None:
         config = get_config()
         file_path = config.ONTOLOGY_PATH
         
-        # Check if local "database" file exists
-        if os.path.exists(file_path):
-            logger.info(f"[Celery] Loading persistent ontology from file: {file_path}")
-            # Prefixing with file:// ensures Owlready2 treats it as a local path
-            _ontology = get_ontology(f"file://{file_path}").load()
-        else:
-            logger.info(f"[Celery] Local file not found. Fetching from URL: {config.ONTOLOGY_URL}")
+        logger.info(f"[Celery] 🔄 FRESH START: Fetching base ontology from {config.ONTOLOGY_URL}")
+        
+        try:
+            # 1. Always load from the Source URL first (ignoring local file)
+            # This creates an in-memory ontology from the clean RDF source
             _ontology = get_ontology(config.ONTOLOGY_URL).load()
             
-            # Save it immediately to create the local file for next time
-            logger.info(f"[Celery] Initializing local persistence file at: {file_path}")
+            # 2. Immediately overwrite the local 'database' file
+            # This wipes any previous deletions/additions from the last session
+            logger.info(f"[Celery] 💾 RESETTING local database at {file_path}")
             _ontology.save(file=file_path, format="ntriples")
+            
+        except Exception as e:
+            logger.error(f"[Celery] ⚠️ Failed to fetch remote ontology: {e}")
+            # Fallback: If internet fails, try to load the local file if it exists
+            if os.path.exists(file_path):
+                logger.warning("[Celery] Using existing local file as fallback.")
+                _ontology = get_ontology(f"file://{file_path}").load()
+            else:
+                raise e
 
     return _ontology
 
