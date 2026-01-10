@@ -61,14 +61,25 @@ def createIndividual(name, BaseClass, unique=False, target_kg=None) -> tuple[Thi
         target_kg = kg_onto
     
     name = onthologifyName(name)
-    if target_kg[name] is None:
+    individual = target_kg[name]
+
+    # If it doesn't exist, create it
+    if individual is None:
         with target_kg:
             return BaseClass(name), False
-    if type(target_kg[name]) != BaseClass or unique:
+    
+    # If it exists and unique=True was requested, fail
+    if unique:
         raise TypeError(
-            "Individual " + name + " already exists:\nExisting: " + str(type(target_kg[name])) + "\nRequested: " + str(
-                BaseClass))
-    return target_kg[name], True
+            f"Individual {name} already exists:\n"
+            f"Existing: {type(individual)}\n"
+            f"Requested: {BaseClass}"
+        )
+    
+    # Return existing individual
+    # Note: We removed the strict type(individual) != BaseClass check 
+    # to allow for reloaded ontologies where class objects might differ slightly.
+    return individual, True
 
 
 def create_meal_types(target_kg=None):
@@ -84,7 +95,7 @@ def create_meal_types(target_kg=None):
     meal_type_names = ["Dinner", "Lunch", "Breakfast"]
     meal_types = {}
     for meal_type_name in meal_type_names:
-        meal_type, _ = createIndividual(meal_type_name, MealType, unique=True, target_kg=target_kg)
+        meal_type, _ = createIndividual(meal_type_name, MealType, unique=False, target_kg=target_kg)
         meal_type.has_meal_type_name.append(meal_type_name)
         meal_types[meal_type_name] = meal_type
     return meal_types
@@ -102,7 +113,7 @@ def create_difficulties(target_kg=None):
     """
     difficulties = []
     for i in range(1, 4):
-        diff, _ = createIndividual("difficulty_" + str(i), Difficulty, unique=True, target_kg=target_kg)
+        diff, _ = createIndividual("difficulty_" + str(i), Difficulty, unique=False, target_kg=target_kg)
         diff.has_numeric_difficulty.append(i)
         difficulties.append(diff)
     return difficulties
@@ -253,23 +264,20 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
     difficulties = create_difficulties(target_kg=target_kg)
     
     # 1. Basic Info
-    title = recipe_data.get("title") or recipe_data.get("name") # Handle both keys
+    title = recipe_data.get("title") or recipe_data.get("name")
     if not title:
         raise ValueError("Recipe must have a title")
 
     recipe_name = onthologifyName(title)
     
-    # Check if exists to avoid overwriting if unique=True (optional based on your needs)
+    # Check if exists
     if target_kg[recipe_name] is not None:
-         # For update logic, we might return the existing one, 
-         # but for strict create we might raise error.
-         # For now, let's return existing so we can modify it.
          recipe = target_kg[recipe_name]
     else:
         recipe, _ = createIndividual(title, BaseClass=Recipe, unique=False, target_kg=target_kg)
 
     # 2. Add Properties (Clear old ones first if updating)
-    recipe.has_recipe_name = [] # Clear existing
+    recipe.has_recipe_name = []
     recipe.has_recipe_name.append(title)
     
     if "instructions" in recipe_data:
@@ -278,12 +286,12 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
 
     # 3. Ingredients
     if "ingredients" in recipe_data:
-        recipe.has_ingredient = [] # Clear existing ingredients
+        recipe.has_ingredient = []
         for extendedIngredient in recipe_data["ingredients"]:
             # Handle ID generation
             ing_id = extendedIngredient.get("id", extendedIngredient.get("name"))
             
-            # Simple check for leading digit
+            # Simple check for leading digit to prevent invalid URIs
             if ing_id and re.search(r'\d', ing_id[0]):
                 name_for_ind = ing_id
             else:
@@ -293,31 +301,42 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
             
             # Update properties of the Amount instance
             ingredientWithAmount.has_ingredient_with_amount_name = [ing_id]
-            ingredientWithAmount.amount_of_ingredient = [float(extendedIngredient.get("amount", 1))]
+            # Convert to float safely
+            try:
+                amt = float(extendedIngredient.get("amount", 1))
+            except (ValueError, TypeError):
+                amt = 1.0
+            ingredientWithAmount.amount_of_ingredient = [amt]
             ingredientWithAmount.unit_of_ingredient = [str(extendedIngredient.get("unit", ""))]
             
             # Link to the base Ingredient Class/Individual
             ing_name = extendedIngredient.get("ingredient", ing_id)
             base_ingredient, _ = createIndividual(ing_name, BaseClass=Ingredient, target_kg=target_kg)
-            base_ingredient.has_ingredient_name = [ing_name]
+            if not base_ingredient.has_ingredient_name:
+                base_ingredient.has_ingredient_name = [ing_name]
             
             ingredientWithAmount.type_of_ingredient = [base_ingredient]
             recipe.has_ingredient.append(ingredientWithAmount)
 
-    # 4. Author & Source (Simplified for brevity - assumes defaults if missing)
+    # 4. Author & Source
     if "author" in recipe_data:
         author, _ = createIndividual(recipe_data["author"], BaseClass=Author, target_kg=target_kg)
-        author.has_author_name = [recipe_data["author"]]
+        if not author.has_author_name:
+            author.has_author_name = [recipe_data["author"]]
         recipe.authored_by = [author]
 
     # 5. Time & Difficulty
     if "time" in recipe_data:
-        time_val = recipe_data["time"]
+        try:
+            time_val = int(recipe_data["time"])
+        except (ValueError, TypeError):
+            time_val = 30 # Default
+            
         time_ind, _ = createIndividual(f"time_{time_val}", BaseClass=Time, target_kg=target_kg)
         time_ind.amount_of_time = [time_val]
         recipe.requires_time = [time_ind]
         
-        # Calc Difficulty
+        # Calc Difficulty logic
         ing_count = len(recipe.has_ingredient)
         if ing_count * 3 + time_val < 20:
             recipe.has_difficulty = [difficulties[0]]
@@ -326,15 +345,49 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
         else:
             recipe.has_difficulty = [difficulties[2]]
 
-    # 6. Nutrients
+    # 6. Dietary Flags
+    if "vegan" in recipe_data:
+        recipe.is_vegan = [bool(recipe_data["vegan"])]
+    if "vegetarian" in recipe_data:
+        recipe.is_vegetarian = [bool(recipe_data["vegetarian"])]
+
+    # 7. Nutrients
     if "nutrients" in recipe_data:
         nutrients = recipe_data["nutrients"]
-        # Helper to set nutrient
-        def set_nutrient(name, val, Cls, Prop):
-            ind, _ = createIndividual(f"{name}_{val}", BaseClass=Cls, target_kg=target_kg)
-            # Find the specific data property for amount (e.g. amount_of_calories)
-            # Assuming standard naming convention from your file
-            pass # (You would set specific amounts here similar to loop)
+        
+        # Calories
+        if "kcal" in nutrients:
+            val = nutrients["kcal"]
+            calories, _ = createIndividual(f"calories_{val}", BaseClass=Calories, target_kg=target_kg)
+            calories.amount_of_calories = [float(val)]
+            recipe.has_calories = [calories]
+
+        # Protein
+        if "protein" in nutrients:
+            val = nutrients["protein"]
+            protein, _ = createIndividual(f"protein_{val}", BaseClass=Protein, target_kg=target_kg)
+            protein.amount_of_protein = [float(val)]
+            recipe.has_protein = [protein]
+
+        # Fat
+        if "fat" in nutrients:
+            val = nutrients["fat"]
+            fat, _ = createIndividual(f"fat_{val}", BaseClass=Fat, target_kg=target_kg)
+            fat.amount_of_fat = [float(val)]
+            recipe.has_fat = [fat]
+
+        # Carbs
+        if "carbs" in nutrients:
+            val = nutrients["carbs"]
+            carbs, _ = createIndividual(f"carbohydrates_{val}", BaseClass=Carbohydrates, target_kg=target_kg)
+            carbs.amount_of_carbohydrates = [float(val)]
+            recipe.has_carbohydrates = [carbs]
+
+    # 8. Links and Images
+    if "source" in recipe_data:
+        recipe.has_link = [recipe_data["source"]]
+    if "image" in recipe_data:
+        recipe.has_image_link = [recipe_data["image"]]
 
     return recipe
 

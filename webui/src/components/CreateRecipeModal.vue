@@ -3,7 +3,6 @@ import { ref, reactive } from 'vue'
 import api from '../../services/axios'
 
 const emit = defineEmits(['close', 'created'])
-
 const isSubmitting = ref(false)
 
 // Form State
@@ -13,32 +12,19 @@ const form = reactive({
   time: 30,
   vegan: false,
   vegetarian: false,
-  ingredients: [], // Will hold objects like { id: 'Flour', amount: 500, unit: 'g' }
-  nutrients: {
-    kcal: 0,
-    protein: 0,
-    fat: 0,
-    carbs: 0
-  }
+  ingredients: [],
+  nutrients: { kcal: 0, protein: 0, fat: 0, carbs: 0 }
 })
 
-// Temporary state for the "Add Ingredient" inputs
-const newIngredient = reactive({
-  name: '',
-  amount: 1,
-  unit: ''
-})
+const newIngredient = reactive({ name: '', amount: 1, unit: '' })
 
 const addIngredient = () => {
   if (!newIngredient.name) return
-  
   form.ingredients.push({
-    id: newIngredient.name, // The backend uses 'id' for the ingredient name
+    id: newIngredient.name,
     amount: parseFloat(newIngredient.amount),
     unit: newIngredient.unit
   })
-  
-  // Reset input
   newIngredient.name = ''
   newIngredient.amount = 1
   newIngredient.unit = ''
@@ -53,10 +39,8 @@ const submitRecipe = async () => {
     alert('Please fill in the title and instructions.')
     return
   }
-
   isSubmitting.value = true
   try {
-    // Send POST request to your new Celery-backed endpoint
     const response = await api.post('/recipes', {
       title: form.title,
       instructions: form.instructions,
@@ -65,18 +49,16 @@ const submitRecipe = async () => {
       vegetarian: form.vegetarian,
       ingredients: form.ingredients,
       nutrients: form.nutrients,
-      // Default author if none provided
-      author: "Web User", 
+      author: "Web User",
       source: "User Submission",
-      image: "https://via.placeholder.com/300?text=New+Recipe" 
+      image: "https://via.placeholder.com/300?text=New+Recipe"
     })
-
-    alert(`Recipe "${form.title}" created! (Task ID: ${response.data.data.task_id})`)
-    emit('created') // Tell parent to refresh list
-    emit('close')   // Close modal
+    alert(`Recipe "${form.title}" created!`)
+    emit('created')
+    emit('close')
   } catch (error) {
     console.error('Failed to create recipe:', error)
-    alert('Error creating recipe. Check console for details.')
+    alert('Error creating recipe. Check console.')
   } finally {
     isSubmitting.value = false
   }
@@ -84,81 +66,70 @@ const submitRecipe = async () => {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4" @click.self="$emit('close')">
-    <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+  <div class="modal-overlay" @click.self="$emit('close')">
+    <div class="modal-content">
       
-      <div class="flex justify-between items-center p-6 border-b">
-        <h3 class="text-2xl font-bold text-gray-800">Create New Recipe</h3>
-        <button @click="$emit('close')" class="text-gray-500 hover:text-gray-700 text-xl">&times;</button>
+      <div class="modal-header">
+        <h3>Create New Recipe</h3>
+        <button class="close-btn" @click="$emit('close')">&times;</button>
       </div>
 
-      <div class="p-6 space-y-4">
+      <div class="modal-body">
         
-        <div>
-          <label class="block text-sm font-medium text-gray-700">Recipe Title</label>
-          <input v-model="form.title" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border" placeholder="e.g. Grandma's Apple Pie" />
+        <div class="form-group">
+          <label>Recipe Title</label>
+          <input v-model="form.title" type="text" placeholder="e.g. Grandma's Apple Pie" />
         </div>
 
-        <div>
-          <label class="block text-sm font-medium text-gray-700">Instructions</label>
-          <textarea v-model="form.instructions" rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border" placeholder="Mix ingredients..."></textarea>
+        <div class="form-group">
+          <label>Instructions</label>
+          <textarea v-model="form.instructions" rows="3" placeholder="Mix ingredients..."></textarea>
         </div>
 
-        <div class="grid grid-cols-2 gap-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700">Time (minutes)</label>
-            <input v-model="form.time" type="number" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border" />
+        <div class="row">
+          <div class="form-group half">
+            <label>Time (min)</label>
+            <input v-model="form.time" type="number" />
           </div>
-          <div class="flex items-center space-x-4 mt-6">
-            <label class="inline-flex items-center">
-              <input v-model="form.vegan" type="checkbox" class="form-checkbox text-green-600">
-              <span class="ml-2">Vegan</span>
-            </label>
-            <label class="inline-flex items-center">
-              <input v-model="form.vegetarian" type="checkbox" class="form-checkbox text-green-600">
-              <span class="ml-2">Vegetarian</span>
-            </label>
+          <div class="form-group half checkboxes">
+            <label><input v-model="form.vegan" type="checkbox"> Vegan</label>
+            <label><input v-model="form.vegetarian" type="checkbox"> Vegetarian</label>
           </div>
         </div>
 
-        <div class="border-t pt-4">
-          <h4 class="font-bold text-gray-700 mb-2">Ingredients</h4>
-          
-          <div class="flex space-x-2 mb-2">
-            <input v-model="newIngredient.name" placeholder="Name (e.g. Flour)" class="flex-grow rounded-md border-gray-300 border p-2 text-sm" @keyup.enter="addIngredient"/>
-            <input v-model="newIngredient.amount" type="number" placeholder="Qty" class="w-20 rounded-md border-gray-300 border p-2 text-sm" />
-            <input v-model="newIngredient.unit" placeholder="Unit" class="w-20 rounded-md border-gray-300 border p-2 text-sm" />
-            <button @click="addIngredient" type="button" class="bg-blue-100 text-blue-700 px-3 py-1 rounded hover:bg-blue-200">+</button>
+        <div class="section">
+          <h4>Ingredients</h4>
+          <div class="ingredient-input-row">
+            <input v-model="newIngredient.name" placeholder="Name (e.g. Flour)" class="ing-name" @keyup.enter="addIngredient"/>
+            <input v-model="newIngredient.amount" type="number" placeholder="Qty" class="ing-qty" />
+            <input v-model="newIngredient.unit" placeholder="Unit" class="ing-unit" />
+            <button @click="addIngredient" type="button" class="add-btn">+</button>
           </div>
 
-          <ul class="space-y-1 text-sm text-gray-600">
-            <li v-for="(ing, index) in form.ingredients" :key="index" class="flex justify-between bg-gray-50 p-2 rounded">
+          <ul class="ingredient-list">
+            <li v-for="(ing, index) in form.ingredients" :key="index">
               <span>{{ ing.amount }} {{ ing.unit }} <b>{{ ing.id }}</b></span>
-              <button @click="removeIngredient(index)" class="text-red-500 hover:text-red-700">remove</button>
+              <span @click="removeIngredient(index)" class="remove-text">remove</span>
             </li>
-            <li v-if="form.ingredients.length === 0" class="text-gray-400 italic">No ingredients added yet.</li>
+            <li v-if="form.ingredients.length === 0" class="empty-msg">No ingredients added yet.</li>
           </ul>
         </div>
 
-        <div class="border-t pt-4">
-          <h4 class="font-bold text-gray-700 mb-2">Nutrients (per serving)</h4>
-          <div class="grid grid-cols-4 gap-2">
-            <div><label class="text-xs">Calories</label><input v-model="form.nutrients.kcal" type="number" class="w-full border p-1 rounded" /></div>
-            <div><label class="text-xs">Protein (g)</label><input v-model="form.nutrients.protein" type="number" class="w-full border p-1 rounded" /></div>
-            <div><label class="text-xs">Fat (g)</label><input v-model="form.nutrients.fat" type="number" class="w-full border p-1 rounded" /></div>
-            <div><label class="text-xs">Carbs (g)</label><input v-model="form.nutrients.carbs" type="number" class="w-full border p-1 rounded" /></div>
+        <div class="section">
+          <h4>Nutrients (per serving)</h4>
+          <div class="row">
+            <div class="form-group quarter"><label>Kcal</label><input v-model="form.nutrients.kcal" type="number" /></div>
+            <div class="form-group quarter"><label>Protein</label><input v-model="form.nutrients.protein" type="number" /></div>
+            <div class="form-group quarter"><label>Fat</label><input v-model="form.nutrients.fat" type="number" /></div>
+            <div class="form-group quarter"><label>Carbs</label><input v-model="form.nutrients.carbs" type="number" /></div>
           </div>
         </div>
 
       </div>
 
-      <div class="p-6 border-t bg-gray-50 flex justify-end space-x-3">
-        <button @click="$emit('close')" class="px-4 py-2 text-gray-600 hover:text-gray-800">Cancel</button>
-        <button 
-          @click="submitRecipe" 
-          :disabled="isSubmitting"
-          class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded transition-colors disabled:opacity-50"
-        >
+      <div class="modal-footer">
+        <button @click="$emit('close')" class="secondary-button">Cancel</button>
+        <button @click="submitRecipe" :disabled="isSubmitting" class="primary-button">
           {{ isSubmitting ? 'Creating...' : 'Create Recipe' }}
         </button>
       </div>
@@ -166,3 +137,212 @@ const submitRecipe = async () => {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* Fonts and General */
+* {
+  font-family: "Poppins", sans-serif;
+  box-sizing: border-box;
+}
+
+/* 1. The Overlay - Makes it a popup */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5); /* Semi-transparent black */
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+/* 2. The Modal Box */
+.modal-content {
+  background: white;
+  width: 90%;
+  max-width: 600px;
+  max-height: 90vh; /* Allow scrolling if screen is small */
+  border-radius: 15px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+  border: 2px solid #000000; /* Matching your theme */
+}
+
+/* Header */
+.modal-header {
+  padding: 20px;
+  border-bottom: 2px solid #eee;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #F0F8FF;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 28px;
+  cursor: pointer;
+  color: #555;
+}
+
+/* Body */
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.section {
+  margin-top: 20px;
+  border-top: 1px solid #eee;
+  padding-top: 10px;
+}
+.section h4 {
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+
+/* Forms */
+.form-group {
+  margin-bottom: 15px;
+  text-align: left;
+}
+label {
+  display: block;
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 5px;
+}
+input, textarea {
+  width: 100%;
+  padding: 10px;
+  border: 2px solid #ccc;
+  border-radius: 8px;
+  font-size: 14px;
+  transition: border-color 0.2s;
+}
+input:focus, textarea:focus {
+  border-color: #FFEE8C;
+  outline: none;
+}
+
+/* Layout Helpers */
+.row {
+  display: flex;
+  gap: 15px;
+}
+.half { width: 50%; }
+.quarter { width: 25%; }
+
+.checkboxes {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding-top: 25px;
+}
+.checkboxes label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.checkboxes input {
+  width: auto;
+}
+
+/* Ingredients Section */
+.ingredient-input-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.ing-name { flex-grow: 2; }
+.ing-qty { width: 70px; }
+.ing-unit { width: 70px; }
+
+.add-btn {
+  background-color: #F0F8FF;
+  border: 2px solid #000;
+  border-radius: 8px;
+  padding: 0 15px;
+  font-weight: bold;
+  cursor: pointer;
+}
+.add-btn:hover { background-color: #DCEEFF; }
+
+.ingredient-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.ingredient-list li {
+  background: #f9f9f9;
+  padding: 8px;
+  margin-bottom: 5px;
+  border-radius: 5px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+}
+.remove-text {
+  color: #ff4d4d;
+  cursor: pointer;
+  font-weight: 600;
+}
+.empty-msg {
+  color: #999;
+  font-style: italic;
+  font-size: 13px;
+}
+
+/* Footer & Buttons */
+.modal-footer {
+  padding: 20px;
+  border-top: 2px solid #eee;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  background-color: #fff;
+}
+
+button {
+  padding: 10px 20px;
+  font-family: "Poppins";
+  font-size: 16px;
+  border: 2px solid #000000;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.secondary-button {
+  background-color: #fff;
+  transition: 0.3s;
+}
+.secondary-button:hover {
+  background-color: #f0f0f0;
+}
+
+.primary-button {
+  background-color: #FFEE8C;
+  transition: 0.3s;
+}
+.primary-button:hover {
+  background-color: #ffde4d;
+}
+.primary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+</style>

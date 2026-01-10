@@ -5,6 +5,7 @@
   import SearchSection from "../components/SearchSection.vue"
   import RecipesSection from "../components/RecipesSection.vue"
   import KnowledgeGraphUpload from "../components/KnowledgeGraphUpload.vue"
+  // IMPORT THE NEW COMPONENT
   import CreateRecipeModal from "../components/CreateRecipeModal.vue" 
 
   export default {
@@ -15,14 +16,14 @@
       SearchSection,
       RecipesSection,
       KnowledgeGraphUpload,
-      CreateRecipeModal  // 1. Component is registered here
+      CreateRecipeModal  // REGISTER IT
     },
 
     data() {
       return {
         recipes: [],
         maxRecipesShown: 0,
-        showCreateModal: false // 2. This controls visibility
+        showCreateModal: false // CONTROL VISIBILITY
       }
     },
 
@@ -53,7 +54,7 @@
 
       handleRecipeCreated() {
          console.log('Recipe created successfully');
-         // Clear recipes to force a refresh/re-search
+         // Clear recipes to force user to search/see update
          this.recipes = [];
       }
     }

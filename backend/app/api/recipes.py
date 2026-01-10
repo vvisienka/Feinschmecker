@@ -275,8 +275,9 @@ def create_recipe():
     
     return success_response(
         data={"task_id": task.id},
-        message="Recipe creation task submitted."
-    ), 202
+        message="Recipe creation task submitted.",
+        status_code=202
+    )
 
 @api_bp.route("/recipes/<string:recipe_name_slug>", methods=["DELETE"])
 def delete_recipe(recipe_name_slug):
@@ -287,5 +288,6 @@ def delete_recipe(recipe_name_slug):
     
     return success_response(
         data={"task_id": task.id},
-        message="Recipe deletion task submitted."
-    ), 202
+        message="Recipe deletion task submitted.",
+        status_code=202
+    )
