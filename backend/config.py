@@ -23,7 +23,7 @@ class Config:
 
     ONTOLOGY_PATH = os.getenv(
         "ONTOLOGY_PATH", 
-        str(BASE_DIR / "../data" / "feinschmecker.nt")
+        str("data/feinschmecker.nt")
     )
     
     ONTOLOGY_CACHE_FILENAME = os.getenv('ONTOLOGY_CACHE_FILENAME', 'feinschmecker.rdf')

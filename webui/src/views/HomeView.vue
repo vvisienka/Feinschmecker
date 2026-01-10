@@ -6,6 +6,7 @@
   import RecipesSection from "../components/RecipesSection.vue"
   import KnowledgeGraphUpload from "../components/KnowledgeGraphUpload.vue"
   import CreateRecipeModal from "../components/CreateRecipeModal.vue" 
+
   export default {
     components: {
       Navbar,
@@ -14,14 +15,14 @@
       SearchSection,
       RecipesSection,
       KnowledgeGraphUpload,
-      CreateRecipeModal
+      CreateRecipeModal  // 1. Component is registered here
     },
 
     data() {
       return {
         recipes: [],
         maxRecipesShown: 0,
-        showCreateModal: false
+        showCreateModal: false // 2. This controls visibility
       }
     },
 
@@ -29,7 +30,6 @@
       handleSearchAction(recipes){
         this.recipes = recipes;
         this.maxRecipesShown = 6;
-        console.log(this.recipes)
       },
 
       scrollToAboutUs(){
@@ -44,24 +44,17 @@
         if(this.maxRecipesShown < this.recipes.length) {
           this.maxRecipesShown += 6
         }
-        console.log(this.maxRecipesShown)
       },
 
       handleGraphUploaded() {
         console.log('Graph uploaded successfully');
-        // Clear current recipes and force a new search
         this.recipes = [];
       },
 
       handleRecipeCreated() {
          console.log('Recipe created successfully');
-         // We can reuse the same logic as upload - clear the list or refresh
+         // Clear recipes to force a refresh/re-search
          this.recipes = [];
-         
-         // Optional: If you want to auto-refresh the search instead of clearing:
-         // if (this.$refs.searchSection && this.$refs.searchSection.performSearch) {
-         //    this.$refs.searchSection.performSearch();
-         // }
       }
     }
   }
@@ -90,18 +83,16 @@
   <SearchSection id="search-section" ref="searchSection" @searched="handleSearchAction"/>
   <RecipesSection @loadMoreRecipes="handleLoadMoreRecipes" :recipes="this.recipes" :maxRecipesShown="maxRecipesShown"/>
 
-  <RecipeCreateForm 
-    :is-open="showCreateModal" 
+  <CreateRecipeModal 
+    v-if="showCreateModal" 
     @close="showCreateModal = false"
-    @refresh="handleRecipeCreated"
+    @created="handleRecipeCreated"
   />
 
 </template>
+
 <style scoped>
   body {
     background: #F0F8FF;
   }
-  
-
 </style>
-
