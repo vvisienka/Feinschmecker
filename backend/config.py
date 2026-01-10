@@ -25,6 +25,9 @@ class Config:
         "ONTOLOGY_PATH", 
         str(BASE_DIR / "../data" / "feinschmecker.nt")
     )
+    
+    ONTOLOGY_CACHE_FILENAME = os.getenv('ONTOLOGY_CACHE_FILENAME', 'feinschmecker.rdf')
+
 
     # API settings
     API_TITLE = "Feinschmecker API"
@@ -39,10 +42,12 @@ class Config:
     REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "60"))
 
     # CORS settings
-    CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
-    CORS_METHODS = ["GET", "OPTIONS"]
-    CORS_ALLOW_HEADERS = ["Content-Type", "Authorization"]
-
+    CORS_ORIGINS = os.getenv('CORS_ORIGINS', '*')
+    # Allow common HTTP methods used by the frontend (including preflight OPTIONS)
+    CORS_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
+    # Allow common headers including Content-Type for JSON requests
+    CORS_ALLOW_HEADERS = ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
+    
     # Cache settings
     CACHE_TYPE = "SimpleCache"
     CACHE_DEFAULT_TIMEOUT = int(os.getenv("CACHE_DEFAULT_TIMEOUT", "300"))  # 5 minutes

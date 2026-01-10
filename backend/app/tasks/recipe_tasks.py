@@ -10,6 +10,9 @@ import logging
 from typing import Any, Dict
 import time
 from owlready2 import get_ontology
+from urllib.request import urlopen
+from urllib.parse import urlparse, unquote
+from pathlib import Path
 from celery.exceptions import SoftTimeLimitExceeded
 from backend.celery_config import celery
 from backend.config import get_config
@@ -21,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 # cache na poziomie workera, żeby nie ładować ontologii przy każdym tasku
 _ontology = None
+_ontology_version = None
+_ontology_uri_cached = None
+_ontology_mtime = None
 
 
 def _get_ontology_for_tasks():
@@ -97,7 +103,20 @@ def search_recipes_async(
         
         
         
-        ontology = _get_ontology_for_tasks()
+        try:
+            ontology = _get_ontology_for_tasks()
+            if not ontology:
+                # This can happen if loading failed and there was no previous version.
+                raise RuntimeError("Ontology could not be loaded and no cached version was available.")
+        except Exception as exc:
+            logger.error(
+                "[Celery] Permanent failure during ontology loading "
+                f"(task_id={self.request.id}): {exc}",
+                exc_info=True,
+            )
+            # Do not retry, as this is a configuration or file system issue.
+            raise
+
         service = RecipeService(ontology)
 
         recipes, total_count = service.get_recipes(filters, page, per_page)
