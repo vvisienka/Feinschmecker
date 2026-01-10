@@ -253,7 +253,8 @@ def load_recipes_from_json(json_path: str, target_kg=None):
 
 def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
     """
-    Create a single recipe individual from a data dictionary.
+    Create OR Update a single recipe individual.
+    If it exists, it clears all properties first to ensure a clean update.
     """
     if target_kg is None:
         target_kg = kg_onto
@@ -262,7 +263,7 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
     meal_types = create_meal_types(target_kg=target_kg)
     difficulties = create_difficulties(target_kg=target_kg)
     
-    # 1. Basic Info
+    # 1. Identify Recipe
     title = recipe_data.get("title") or recipe_data.get("name")
     if not title:
         raise ValueError("Recipe must have a title")
@@ -272,20 +273,33 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
     # Check if exists
     if target_kg[recipe_name] is not None:
          recipe = target_kg[recipe_name]
+         # --- CRITICAL FOR UPDATES: CLEAR EVERYTHING ---
+         recipe.has_recipe_name = []
+         recipe.has_instructions = []
+         recipe.has_ingredient = []
+         recipe.authored_by = []
+         recipe.requires_time = []
+         recipe.has_difficulty = []
+         recipe.is_meal_type = []
+         recipe.is_vegan = []
+         recipe.is_vegetarian = []
+         recipe.has_calories = []
+         recipe.has_protein = []
+         recipe.has_fat = []
+         recipe.has_carbohydrates = []
+         recipe.has_link = []
+         recipe.has_image_link = []
     else:
         recipe, _ = createIndividual(title, BaseClass=Recipe, unique=False, target_kg=target_kg)
 
     # 2. Add Properties
-    recipe.has_recipe_name = []
     recipe.has_recipe_name.append(title)
     
     if "instructions" in recipe_data:
-        recipe.has_instructions = []
         recipe.has_instructions.append(str(recipe_data["instructions"]))
 
     # 3. Ingredients
     if "ingredients" in recipe_data:
-        recipe.has_ingredient = []
         for extendedIngredient in recipe_data["ingredients"]:
             ing_id = extendedIngredient.get("id", extendedIngredient.get("name"))
             
@@ -296,6 +310,7 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
                 
             ingredientWithAmount, existed = createIndividual(name_for_ind, BaseClass=IngredientWithAmount, target_kg=target_kg)
             
+            # Update Amount Properties
             ingredientWithAmount.has_ingredient_with_amount_name = [ing_id]
             try:
                 amt = float(extendedIngredient.get("amount", 1))
@@ -304,6 +319,7 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
             ingredientWithAmount.amount_of_ingredient = [amt]
             ingredientWithAmount.unit_of_ingredient = [str(extendedIngredient.get("unit", ""))]
             
+            # Link to Base Ingredient
             ing_name = extendedIngredient.get("ingredient", ing_id)
             base_ingredient, _ = createIndividual(ing_name, BaseClass=Ingredient, target_kg=target_kg)
             if not base_ingredient.has_ingredient_name:
@@ -312,7 +328,7 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
             ingredientWithAmount.type_of_ingredient = [base_ingredient]
             recipe.has_ingredient.append(ingredientWithAmount)
 
-    # 4. Author & Source & Links (CRITICAL FIXES HERE)
+    # 4. Author & Source & Links
     author_ind = None
     if "author" in recipe_data:
         author_ind, _ = createIndividual(recipe_data["author"], BaseClass=Author, target_kg=target_kg)
@@ -321,24 +337,22 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
         recipe.authored_by = [author_ind]
 
     if "source" in recipe_data:
-        # Create Source Individual
         source_ind, _ = createIndividual(recipe_data["source"], BaseClass=Source, target_kg=target_kg)
         if not source_ind.has_source_name:
             source_ind.has_source_name = [recipe_data["source"]]
         
-        # --- FIX 1: Ensure Source has a website link (Required by Query) ---
+        # Ensure Source has a website link (Required by Query)
         if not source_ind.is_website:
-            # Use a dummy link if it's a manual submission
             source_ind.is_website = ["http://feinschmecker.local"]
 
-        # Link Author -> Source
         if author_ind and hasattr(author_ind, 'is_author_of'):
              if source_ind not in author_ind.is_author_of:
                  author_ind.is_author_of.append(source_ind)
     
-    # --- FIX 2: Ensure Recipe has a direct link (Required by Query) ---
-    # We use the source name as a fallback if no URL is provided
-    if not recipe.has_link:
+    # Ensure Recipe has a direct link (Required by Query)
+    if "link" in recipe_data and recipe_data["link"]:
+        recipe.has_link = [recipe_data["link"]]
+    else:
         recipe.has_link = ["http://feinschmecker.local/recipe/" + recipe_name]
 
     # 5. Time & Difficulty

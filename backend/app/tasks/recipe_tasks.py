@@ -19,6 +19,7 @@ from backend.config import get_config
 from backend.app.services.recipe_service import RecipeService
 from ontology.individuals import create_single_recipe, delete_recipe_individual
 import os
+from ontology.individuals import onthologifyName
 
 logger = logging.getLogger(__name__)
 
@@ -229,3 +230,40 @@ def delete_recipe_async(self, recipe_name: str):
     except Exception as exc:
         logger.error(f"[Celery] Delete failed: {exc}", exc_info=True)
         raise self.retry(exc=exc, countdown=5, max_retries=3)
+    
+    
+@celery.task(name="recipes.update_recipe", bind=True)
+def update_recipe_async(self, old_slug: str, recipe_data: dict):
+    """
+    Update a recipe. If title changed, delete old individual and create new one.
+    """
+    try:
+        logger.info(f"[Celery] Updating recipe: {old_slug} -> {recipe_data.get('title')}")
+        onto = _get_ontology_for_tasks()
+        config = get_config()
+
+        new_title = recipe_data.get("title")
+        if not new_title:
+             raise ValueError("Recipe title is missing")
+
+        new_slug = onthologifyName(new_title)
+
+        with onto:
+            # 1. Handle Rename: If title changed, the ID changes, so delete the old one.
+            if old_slug != new_slug:
+                logger.info(f"[Celery] Title changed. Deleting old ID: {old_slug}")
+                delete_recipe_individual(old_slug, target_kg=onto)
+
+            # 2. Create/Overwrite the recipe with new data
+            create_single_recipe(recipe_data, target_kg=onto)
+
+        # 3. Persist
+        onto.save(file=config.ONTOLOGY_PATH, format="ntriples")
+        logger.info(f"[Celery] Update saved to {config.ONTOLOGY_PATH}")
+
+        return {"status": "updated", "slug": new_slug, "title": new_title}
+
+    except Exception as exc:
+        logger.error(f"[Celery] Update failed: {exc}", exc_info=True)
+        raise self.retry(exc=exc, countdown=5, max_retries=3)
+    
