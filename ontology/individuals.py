@@ -254,7 +254,6 @@ def load_recipes_from_json(json_path: str, target_kg=None):
 def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
     """
     Create a single recipe individual from a data dictionary.
-    Reuses existing logic but for one item.
     """
     if target_kg is None:
         target_kg = kg_onto
@@ -276,7 +275,7 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
     else:
         recipe, _ = createIndividual(title, BaseClass=Recipe, unique=False, target_kg=target_kg)
 
-    # 2. Add Properties (Clear old ones first if updating)
+    # 2. Add Properties
     recipe.has_recipe_name = []
     recipe.has_recipe_name.append(title)
     
@@ -288,10 +287,8 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
     if "ingredients" in recipe_data:
         recipe.has_ingredient = []
         for extendedIngredient in recipe_data["ingredients"]:
-            # Handle ID generation
             ing_id = extendedIngredient.get("id", extendedIngredient.get("name"))
             
-            # Simple check for leading digit to prevent invalid URIs
             if ing_id and re.search(r'\d', ing_id[0]):
                 name_for_ind = ing_id
             else:
@@ -299,9 +296,7 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
                 
             ingredientWithAmount, existed = createIndividual(name_for_ind, BaseClass=IngredientWithAmount, target_kg=target_kg)
             
-            # Update properties of the Amount instance
             ingredientWithAmount.has_ingredient_with_amount_name = [ing_id]
-            # Convert to float safely
             try:
                 amt = float(extendedIngredient.get("amount", 1))
             except (ValueError, TypeError):
@@ -309,7 +304,6 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
             ingredientWithAmount.amount_of_ingredient = [amt]
             ingredientWithAmount.unit_of_ingredient = [str(extendedIngredient.get("unit", ""))]
             
-            # Link to the base Ingredient Class/Individual
             ing_name = extendedIngredient.get("ingredient", ing_id)
             base_ingredient, _ = createIndividual(ing_name, BaseClass=Ingredient, target_kg=target_kg)
             if not base_ingredient.has_ingredient_name:
@@ -318,74 +312,100 @@ def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
             ingredientWithAmount.type_of_ingredient = [base_ingredient]
             recipe.has_ingredient.append(ingredientWithAmount)
 
-    # 4. Author & Source
+    # 4. Author & Source & Links (CRITICAL FIXES HERE)
+    author_ind = None
     if "author" in recipe_data:
-        author, _ = createIndividual(recipe_data["author"], BaseClass=Author, target_kg=target_kg)
-        if not author.has_author_name:
-            author.has_author_name = [recipe_data["author"]]
-        recipe.authored_by = [author]
+        author_ind, _ = createIndividual(recipe_data["author"], BaseClass=Author, target_kg=target_kg)
+        if not author_ind.has_author_name:
+            author_ind.has_author_name = [recipe_data["author"]]
+        recipe.authored_by = [author_ind]
+
+    if "source" in recipe_data:
+        # Create Source Individual
+        source_ind, _ = createIndividual(recipe_data["source"], BaseClass=Source, target_kg=target_kg)
+        if not source_ind.has_source_name:
+            source_ind.has_source_name = [recipe_data["source"]]
+        
+        # --- FIX 1: Ensure Source has a website link (Required by Query) ---
+        if not source_ind.is_website:
+            # Use a dummy link if it's a manual submission
+            source_ind.is_website = ["http://feinschmecker.local"]
+
+        # Link Author -> Source
+        if author_ind and hasattr(author_ind, 'is_author_of'):
+             if source_ind not in author_ind.is_author_of:
+                 author_ind.is_author_of.append(source_ind)
+    
+    # --- FIX 2: Ensure Recipe has a direct link (Required by Query) ---
+    # We use the source name as a fallback if no URL is provided
+    if not recipe.has_link:
+        recipe.has_link = ["http://feinschmecker.local/recipe/" + recipe_name]
 
     # 5. Time & Difficulty
     if "time" in recipe_data:
         try:
             time_val = int(recipe_data["time"])
         except (ValueError, TypeError):
-            time_val = 30 # Default
+            time_val = 30 
             
         time_ind, _ = createIndividual(f"time_{time_val}", BaseClass=Time, target_kg=target_kg)
         time_ind.amount_of_time = [time_val]
         recipe.requires_time = [time_ind]
         
-        # Calc Difficulty logic
-        ing_count = len(recipe.has_ingredient)
-        if ing_count * 3 + time_val < 20:
-            recipe.has_difficulty = [difficulties[0]]
-        elif ing_count * 3 + time_val < 60:
-            recipe.has_difficulty = [difficulties[1]]
-        else:
-            recipe.has_difficulty = [difficulties[2]]
+        if "difficulty" in recipe_data:
+            try:
+                diff_idx = int(recipe_data["difficulty"]) - 1
+                if 0 <= diff_idx < len(difficulties):
+                    recipe.has_difficulty = [difficulties[diff_idx]]
+            except (ValueError, TypeError):
+                pass 
+        
+        if not recipe.has_difficulty:
+            ing_count = len(recipe.has_ingredient)
+            if ing_count * 3 + time_val < 20:
+                recipe.has_difficulty = [difficulties[0]]
+            elif ing_count * 3 + time_val < 60:
+                recipe.has_difficulty = [difficulties[1]]
+            else:
+                recipe.has_difficulty = [difficulties[2]]
 
-    # 6. Dietary Flags
+    # 6. Meal Type
+    if "meal_type" in recipe_data:
+        mt_name = recipe_data["meal_type"]
+        if mt_name in meal_types:
+            recipe.is_meal_type = [meal_types[mt_name]]
+
+    # 7. Dietary Flags
     if "vegan" in recipe_data:
         recipe.is_vegan = [bool(recipe_data["vegan"])]
     if "vegetarian" in recipe_data:
         recipe.is_vegetarian = [bool(recipe_data["vegetarian"])]
 
-    # 7. Nutrients
+    # 8. Nutrients
     if "nutrients" in recipe_data:
         nutrients = recipe_data["nutrients"]
-        
-        # Calories
         if "kcal" in nutrients:
             val = nutrients["kcal"]
             calories, _ = createIndividual(f"calories_{val}", BaseClass=Calories, target_kg=target_kg)
             calories.amount_of_calories = [float(val)]
             recipe.has_calories = [calories]
-
-        # Protein
         if "protein" in nutrients:
             val = nutrients["protein"]
             protein, _ = createIndividual(f"protein_{val}", BaseClass=Protein, target_kg=target_kg)
             protein.amount_of_protein = [float(val)]
             recipe.has_protein = [protein]
-
-        # Fat
         if "fat" in nutrients:
             val = nutrients["fat"]
             fat, _ = createIndividual(f"fat_{val}", BaseClass=Fat, target_kg=target_kg)
             fat.amount_of_fat = [float(val)]
             recipe.has_fat = [fat]
-
-        # Carbs
         if "carbs" in nutrients:
             val = nutrients["carbs"]
             carbs, _ = createIndividual(f"carbohydrates_{val}", BaseClass=Carbohydrates, target_kg=target_kg)
             carbs.amount_of_carbohydrates = [float(val)]
             recipe.has_carbohydrates = [carbs]
 
-    # 8. Links and Images
-    if "source" in recipe_data:
-        recipe.has_link = [recipe_data["source"]]
+    # 9. Links and Images
     if "image" in recipe_data:
         recipe.has_image_link = [recipe_data["image"]]
 
