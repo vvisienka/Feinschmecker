@@ -12,6 +12,7 @@ from celery.result import AsyncResult
 
 from backend.celery_config import celery
 from backend.app.tasks.recipe_tasks import search_recipes_async
+from backend.app.tasks.recipe_tasks import create_recipe_async, delete_recipe_async
 
 from celery.exceptions import TimeoutError as CeleryTimeoutError, SoftTimeLimitExceeded
 
@@ -259,3 +260,32 @@ def get_recipes_task_status(task_id):
         message="Unknown task state"
     )
 
+@api_bp.route("/recipes", methods=["POST"])
+def create_recipe():
+    """
+    Create a new recipe asynchronously.
+    Expected JSON: { "title": "My Cake", "instructions": "...", ... }
+    """
+    data = request.get_json()
+    if not data or "title" not in data:
+        return validation_error_response(["Title is required"])
+
+    # Trigger Celery Task
+    task = create_recipe_async.delay(data)
+    
+    return success_response(
+        data={"task_id": task.id},
+        message="Recipe creation task submitted."
+    ), 202
+
+@api_bp.route("/recipes/<string:recipe_name_slug>", methods=["DELETE"])
+def delete_recipe(recipe_name_slug):
+    """
+    Delete a recipe by its ontology slug/name.
+    """
+    task = delete_recipe_async.delay(recipe_name_slug)
+    
+    return success_response(
+        data={"task_id": task.id},
+        message="Recipe deletion task submitted."
+    ), 202

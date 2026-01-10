@@ -73,7 +73,7 @@ def create_kg(source_name: str = "default", destroy_existing: bool = False):
 
 
 # Default knowledge graph (backward compatibility)
-kg_onto = create_kg("default", destroy_existing=True)
+kg_onto = create_kg("default", destroy_existing=False) #Changed to make change in data possible
 
 # Backward compatibility alias (deprecated)
 onto = kg_onto

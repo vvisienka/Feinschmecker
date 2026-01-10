@@ -14,6 +14,8 @@ from celery.exceptions import SoftTimeLimitExceeded
 from backend.celery_config import celery
 from backend.config import get_config
 from backend.app.services.recipe_service import RecipeService
+from ontology.individuals import create_single_recipe, delete_recipe_individual
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -23,20 +25,28 @@ _ontology = None
 
 def _get_ontology_for_tasks():
     """
-    Lazily load ontology in Celery worker process.
-
-    This keeps the task stateless from the caller perspective:
-    the only inputs are function arguments, ontology is read-only.
+    Load ontology with persistence priority:
+    1. Local File (ONTOLOGY_PATH) -> Contains latest User edits.
+    2. Web URL (ONTOLOGY_URL) -> Fallback for fresh setup.
     """
     global _ontology
     if _ontology is None:
         config = get_config()
-        if not config.ONTOLOGY_URL:
-            raise RuntimeError("ONTOLOGY_URL is not configured")
+        file_path = config.ONTOLOGY_PATH
+        
+        # Check if local "database" file exists
+        if os.path.exists(file_path):
+            logger.info(f"[Celery] Loading persistent ontology from file: {file_path}")
+            # Prefixing with file:// ensures Owlready2 treats it as a local path
+            _ontology = get_ontology(f"file://{file_path}").load()
+        else:
+            logger.info(f"[Celery] Local file not found. Fetching from URL: {config.ONTOLOGY_URL}")
+            _ontology = get_ontology(config.ONTOLOGY_URL).load()
+            
+            # Save it immediately to create the local file for next time
+            logger.info(f"[Celery] Initializing local persistence file at: {file_path}")
+            _ontology.save(file=file_path, format="ntriples")
 
-        logger.info(f"[Celery] Loading ontology from {config.ONTOLOGY_URL}")
-        _ontology = get_ontology(config.ONTOLOGY_URL).load()
-        logger.info("[Celery] Ontology loaded successfully in worker")
     return _ontology
 
 
@@ -138,3 +148,54 @@ def search_recipes_async(
         )
         # nie retry – to raczej bug w logice niż chwilowy problem
         raise
+
+
+@celery.task(name="recipes.create_recipe", bind=True)
+def create_recipe_async(self, recipe_data: dict):
+    """
+    Creates a new recipe and SAVES to the .nt file.
+    """
+    try:
+        logger.info(f"[Celery] Creating recipe: {recipe_data.get('title')}")
+        onto = _get_ontology_for_tasks()
+        config = get_config()
+
+        # 1. Modify the ontology in memory
+        with onto:
+            create_single_recipe(recipe_data, target_kg=onto)
+
+        # 2. Persist changes to disk
+        # This is the Critical Step for CRUD
+        onto.save(file=config.ONTOLOGY_PATH, format="ntriples")
+        logger.info(f"[Celery] Saved changes to {config.ONTOLOGY_PATH}")
+
+        return {"status": "created", "title": recipe_data.get("title")}
+
+    except Exception as exc:
+        logger.error(f"[Celery] Create failed: {exc}", exc_info=True)
+        raise self.retry(exc=exc, countdown=5, max_retries=3)
+
+
+@celery.task(name="recipes.delete_recipe", bind=True)
+def delete_recipe_async(self, recipe_name: str):
+    """
+    Deletes a recipe and SAVES to the .nt file.
+    """
+    try:
+        logger.info(f"[Celery] Deleting recipe: {recipe_name}")
+        onto = _get_ontology_for_tasks()
+        config = get_config()
+
+        with onto:
+            success = delete_recipe_individual(recipe_name, target_kg=onto)
+
+        if success:
+            onto.save(file=config.ONTOLOGY_PATH, format="ntriples")
+            logger.info(f"[Celery] Saved deletion to {config.ONTOLOGY_PATH}")
+            return {"status": "deleted", "name": recipe_name}
+        else:
+            return {"status": "not_found", "name": recipe_name}
+
+    except Exception as exc:
+        logger.error(f"[Celery] Delete failed: {exc}", exc_info=True)
+        raise self.retry(exc=exc, countdown=5, max_retries=3)

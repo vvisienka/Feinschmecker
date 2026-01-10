@@ -21,6 +21,11 @@ class Config:
     )
     ONTOLOGY_CACHE_DIR = os.getenv("ONTOLOGY_CACHE_DIR", "/tmp/owlready2_cache")
 
+    ONTOLOGY_PATH = os.getenv(
+        "ONTOLOGY_PATH", 
+        str(BASE_DIR / "../data" / "feinschmecker.nt")
+    )
+
     # API settings
     API_TITLE = "Feinschmecker API"
     API_VERSION = "1.0"
