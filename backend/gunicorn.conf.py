@@ -44,6 +44,11 @@ tmp_upload_dir = None
 # Application
 wsgi_app = 'backend.website:app'
 
+# Preload application in the master process so the master can perform
+# one-time initialization (like downloading the ontology) before workers
+# are forked. This prevents multiple workers racing to download/load the file.
+preload_app = True
+
 # Server hooks
 def on_starting(server):
     """Called just before the master process is initialized."""

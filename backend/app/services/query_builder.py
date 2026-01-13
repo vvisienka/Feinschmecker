@@ -15,7 +15,12 @@ class RecipeQueryBuilder:
     """Builder class for constructing SPARQL queries for recipe filtering."""
     
     def __init__(self):
-        """Initialize the query builder."""
+        """Initialize the query builder with standard prefixes."""
+        # --- DEFINED PREFIXES HERE ---
+        self.prefixes = (
+            "PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> "
+            "PREFIX feinschmecker: <https://jaron.sprute.com/uni/actionable-knowledge-representation/feinschmecker/> "
+        )
         self.header = ""
         self.body = ""
         self.filters = {}
@@ -23,14 +28,6 @@ class RecipeQueryBuilder:
     def build_query(self, filters: Dict[str, Any], limit: Optional[int] = None, offset: Optional[int] = None) -> str:
         """
         Build a complete SPARQL query from filter parameters.
-        
-        Args:
-            filters: Dictionary of filter parameters
-            limit: Maximum number of results to return
-            offset: Number of results to skip (for pagination)
-        
-        Returns:
-            Complete SPARQL query string
         """
         self.filters = filters
         self._build_header()
@@ -48,12 +45,14 @@ class RecipeQueryBuilder:
         return query
     
     def _build_header(self):
-        """Build the SELECT clause of the query."""
-        self.header = (
+        """Build the SELECT clause of the query including PREFIXES."""
+        # Use the prefixes defined in __init__
+        select_clause = (
             "SELECT ?name ?link ?image_link ?instructions "
             "(GROUP_CONCAT(?ing_name ; separator = \"#\" ) AS ?ingredients) "
             "?vegan ?vegetarian ?type_name ?time_amount ?difficulty_amount "
         )
+        self.header = self.prefixes + select_clause
     
     def _build_body(self):
         """Build the WHERE clause and filters of the query."""
@@ -82,12 +81,6 @@ class RecipeQueryBuilder:
         self.body += self._build_group_by()
     
     def _add_ingredient_filters(self, ingredients: list):
-        """
-        Add ingredient filtering to the query.
-        
-        Args:
-            ingredients: List of ingredient names to filter by
-        """
         appendum = "a"
         for i, ingredient in enumerate(ingredients):
             self.body += f"?res feinschmecker:has_ingredient ?ext_ing{appendum} . \n"
@@ -97,7 +90,6 @@ class RecipeQueryBuilder:
             appendum += "a"
     
     def _add_dietary_filters(self):
-        """Add vegan and vegetarian filtering to the query."""
         if "vegan" in self.filters:
             vegan_value = "true" if self.filters["vegan"] else "false"
             self.body += f"?res feinschmecker:is_vegan {vegan_value} . \n"
@@ -109,7 +101,6 @@ class RecipeQueryBuilder:
         self.body += "?res feinschmecker:is_vegetarian ?vegetarian . \n"
     
     def _add_meal_type_filter(self):
-        """Add meal type filtering to the query."""
         if "meal_type" in self.filters:
             self.body += "?res feinschmecker:is_meal_type ?type . \n"
             self.body += f"?type feinschmecker:has_meal_type_name \"{self.filters['meal_type']}\" . \n"
@@ -119,7 +110,6 @@ class RecipeQueryBuilder:
             self.body += "   ?type feinschmecker:has_meal_type_name ?type_name}. \n"
     
     def _add_time_difficulty_filters(self):
-        """Add time and difficulty filtering to the query."""
         # Time filter
         self.body += "?res feinschmecker:requires_time ?time . \n"
         self.body += "?time feinschmecker:amount_of_time ?time_amount . \n"
@@ -133,19 +123,11 @@ class RecipeQueryBuilder:
             self.body += f"FILTER (?difficulty_amount = {self.filters['difficulty']}) . \n"
     
     def _add_nutrient_filters(self):
-        """Add nutrient filtering to the query."""
         nutrients = ['calories', 'protein', 'fat', 'carbohydrates']
-        
         for nutrient in nutrients:
             self._add_nutrient_filter(nutrient)
     
     def _add_nutrient_filter(self, nutrient: str):
-        """
-        Add a single nutrient filter to the query.
-        
-        Args:
-            nutrient: Name of the nutrient (e.g., 'calories', 'protein')
-        """
         self.header += f"?{nutrient}_amount "
         self.body += f"?res feinschmecker:has_{nutrient} ?{nutrient} . \n"
         self.body += f"?{nutrient} feinschmecker:amount_of_{nutrient} ?{nutrient}_amount . \n"
@@ -169,7 +151,6 @@ class RecipeQueryBuilder:
             self.body += f"FILTER (?{nutrient}_amount < {self.filters[max_key]}) . \n"
     
     def _add_required_fields(self):
-        """Add required recipe fields to the query."""
         self.body += "?res feinschmecker:has_link ?link . \n"
         self.body += "?res feinschmecker:has_image_link ?image_link . \n"
         self.body += "?res feinschmecker:has_recipe_name ?name . \n"
@@ -186,7 +167,6 @@ class RecipeQueryBuilder:
         self.body += "?source feinschmecker:is_website ?source_link . \n"
     
     def _build_group_by(self) -> str:
-        """Build the GROUP BY clause."""
         return (
             "GROUP BY ?name ?link ?image_link ?instructions ?vegan ?vegetarian "
             "?type_name ?time_amount ?difficulty_amount ?calories_amount "
@@ -198,19 +178,14 @@ class RecipeQueryBuilder:
 def build_count_query(filters: Dict[str, Any]) -> str:
     """
     Build a SPARQL query to count total matching recipes (for pagination).
-    
-    Args:
-        filters: Dictionary of filter parameters
-    
-    Returns:
-        SPARQL COUNT query string
     """
     # Build a query similar to the main query but only count results
     builder = RecipeQueryBuilder()
     builder.filters = filters
     
     # Use COUNT with DISTINCT
-    count_header = "SELECT (COUNT(DISTINCT ?res) AS ?count) "
+    # --- FIX: Prepend builder.prefixes here! ---
+    count_header = builder.prefixes + "SELECT (COUNT(DISTINCT ?res) AS ?count) "
     
     # Build body without grouping
     builder._build_body()
@@ -221,4 +196,3 @@ def build_count_query(filters: Dict[str, Any]) -> str:
     query = count_header + body
     logger.debug(f"Built count query: {query}")
     return query
-

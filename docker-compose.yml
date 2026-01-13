@@ -41,6 +41,7 @@ services:
       - ./backend:/app/backend
       - ./ontology:/app/ontology
       - ./data:/app/data
+      - ./tmp/owlready2_cache:/tmp/owlready2_cache
 
   frontend:
     build:
@@ -83,6 +84,7 @@ services:
       - ./backend:/app/backend
       - ./ontology:/app/ontology
       - ./data:/app/data
+      - ./tmp/owlready2_cache:/tmp/owlready2_cache
 
   celery-beat:
     build:
@@ -107,6 +109,7 @@ services:
       - ./backend:/app/backend
       - ./ontology:/app/ontology
       - ./data:/app/data
+      - ./tmp/owlready2_cache:/tmp/owlready2_cache
 
 networks:
   feinschmecker-network:
