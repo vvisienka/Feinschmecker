@@ -61,14 +61,25 @@ def createIndividual(name, BaseClass, unique=False, target_kg=None) -> tuple[Thi
         target_kg = kg_onto
     
     name = onthologifyName(name)
-    if target_kg[name] is None:
+    individual = target_kg[name]
+
+    # If it doesn't exist, create it
+    if individual is None:
         with target_kg:
             return BaseClass(name), False
-    if type(target_kg[name]) != BaseClass or unique:
+    
+    # If it exists and unique=True was requested, fail
+    if unique:
         raise TypeError(
-            "Individual " + name + " already exists:\nExisting: " + str(type(target_kg[name])) + "\nRequested: " + str(
-                BaseClass))
-    return target_kg[name], True
+            f"Individual {name} already exists:\n"
+            f"Existing: {type(individual)}\n"
+            f"Requested: {BaseClass}"
+        )
+    
+    # Return existing individual
+    # Note: We removed the strict type(individual) != BaseClass check 
+    # to allow for reloaded ontologies where class objects might differ slightly.
+    return individual, True
 
 
 def create_meal_types(target_kg=None):
@@ -84,7 +95,7 @@ def create_meal_types(target_kg=None):
     meal_type_names = ["Dinner", "Lunch", "Breakfast"]
     meal_types = {}
     for meal_type_name in meal_type_names:
-        meal_type, _ = createIndividual(meal_type_name, MealType, unique=True, target_kg=target_kg)
+        meal_type, _ = createIndividual(meal_type_name, MealType, unique=False, target_kg=target_kg)
         meal_type.has_meal_type_name.append(meal_type_name)
         meal_types[meal_type_name] = meal_type
     return meal_types
@@ -102,7 +113,7 @@ def create_difficulties(target_kg=None):
     """
     difficulties = []
     for i in range(1, 4):
-        diff, _ = createIndividual("difficulty_" + str(i), Difficulty, unique=True, target_kg=target_kg)
+        diff, _ = createIndividual("difficulty_" + str(i), Difficulty, unique=False, target_kg=target_kg)
         diff.has_numeric_difficulty.append(i)
         difficulties.append(diff)
     return difficulties
@@ -239,3 +250,202 @@ def load_recipes_from_json(json_path: str, target_kg=None):
     
     return recipes_created
 
+
+def create_single_recipe(recipe_data: dict, target_kg=None) -> Thing:
+    """
+    Create OR Update a single recipe individual.
+    Ensures all strict SPARQL requirements (Author, Source, Image) are met.
+    """
+    if target_kg is None:
+        target_kg = kg_onto
+
+    # Ensure dependencies exist
+    meal_types = create_meal_types(target_kg=target_kg)
+    difficulties = create_difficulties(target_kg=target_kg)
+    
+    # 1. Identify Recipe
+    title = recipe_data.get("title") or recipe_data.get("name")
+    if not title:
+        raise ValueError("Recipe must have a title")
+
+    recipe_name = onthologifyName(title)
+    
+    # Check if exists
+    if target_kg[recipe_name] is not None:
+         recipe = target_kg[recipe_name]
+         # Clear properties for clean update
+         recipe.has_recipe_name = []
+         recipe.has_instructions = []
+         recipe.has_ingredient = []
+         recipe.authored_by = []
+         recipe.requires_time = []
+         recipe.has_difficulty = []
+         recipe.is_meal_type = []
+         recipe.is_vegan = []
+         recipe.is_vegetarian = []
+         recipe.has_calories = []
+         recipe.has_protein = []
+         recipe.has_fat = []
+         recipe.has_carbohydrates = []
+         recipe.has_link = []
+         recipe.has_image_link = []
+    else:
+        recipe, _ = createIndividual(title, BaseClass=Recipe, unique=False, target_kg=target_kg)
+
+    # 2. Add Properties
+    recipe.has_recipe_name.append(title)
+    
+    # Instructions default
+    instr = recipe_data.get("instructions", "No instructions provided.")
+    recipe.has_instructions.append(str(instr))
+
+    # 3. Ingredients
+    if "ingredients" in recipe_data:
+        for extendedIngredient in recipe_data["ingredients"]:
+            ing_id = extendedIngredient.get("id", extendedIngredient.get("name"))
+            
+            if ing_id and re.search(r'\d', ing_id[0]):
+                name_for_ind = ing_id
+            else:
+                name_for_ind = f"1 {ing_id}"
+                
+            ingredientWithAmount, existed = createIndividual(name_for_ind, BaseClass=IngredientWithAmount, target_kg=target_kg)
+            
+            ingredientWithAmount.has_ingredient_with_amount_name = [ing_id]
+            try:
+                amt = float(extendedIngredient.get("amount", 1))
+            except (ValueError, TypeError):
+                amt = 1.0
+            ingredientWithAmount.amount_of_ingredient = [amt]
+            ingredientWithAmount.unit_of_ingredient = [str(extendedIngredient.get("unit", ""))]
+            
+            ing_name = extendedIngredient.get("ingredient", ing_id)
+            base_ingredient, _ = createIndividual(ing_name, BaseClass=Ingredient, target_kg=target_kg)
+            if not base_ingredient.has_ingredient_name:
+                base_ingredient.has_ingredient_name = [ing_name]
+            
+            ingredientWithAmount.type_of_ingredient = [base_ingredient]
+            recipe.has_ingredient.append(ingredientWithAmount)
+
+    # 4. Author & Source (STRICT QUERY REQUIREMENTS FIX)
+    # ---------------------------------------------------------
+    # Get values or defaults
+    author_name = recipe_data.get("author") or "Unknown Author"
+    source_name = recipe_data.get("source") or "User Submission"
+    
+    # Create Author
+    author_ind, _ = createIndividual(author_name, BaseClass=Author, target_kg=target_kg)
+    if not author_ind.has_author_name:
+        author_ind.has_author_name = [author_name]
+    recipe.authored_by = [author_ind]
+
+    # Create Source
+    source_ind, _ = createIndividual(source_name, BaseClass=Source, target_kg=target_kg)
+    if not source_ind.has_source_name:
+        source_ind.has_source_name = [source_name]
+    
+    # REQUIREMENT: Source MUST have a website link
+    if not source_ind.is_website:
+        source_ind.is_website = ["http://feinschmecker.local"]
+
+    # REQUIREMENT: Author MUST be linked to Source
+    if source_ind not in author_ind.is_author_of:
+        author_ind.is_author_of.append(source_ind)
+    # ---------------------------------------------------------
+
+    # 5. Recipe Links & Images (STRICT QUERY REQUIREMENTS FIX)
+    # ---------------------------------------------------------
+    # REQUIREMENT: Recipe MUST have a direct link
+    if "link" in recipe_data and recipe_data["link"]:
+        recipe.has_link = [recipe_data["link"]]
+    else:
+        recipe.has_link = [f"http://feinschmecker.local/recipe/{recipe_name}"]
+
+    # REQUIREMENT: Recipe MUST have an image link
+    if "image" in recipe_data and recipe_data["image"]:
+        recipe.has_image_link = [recipe_data["image"]]
+    else:
+        # Placeholder image so the query doesn't filter this recipe out
+        recipe.has_image_link = ["https://via.placeholder.com/300?text=No+Image"]
+    # ---------------------------------------------------------
+
+    # 6. Time & Difficulty
+    if "time" in recipe_data:
+        try:
+            time_val = int(recipe_data["time"])
+        except (ValueError, TypeError):
+            time_val = 30 
+            
+        time_ind, _ = createIndividual(f"time_{time_val}", BaseClass=Time, target_kg=target_kg)
+        time_ind.amount_of_time = [time_val]
+        recipe.requires_time = [time_ind]
+        
+        if "difficulty" in recipe_data:
+            try:
+                diff_idx = int(recipe_data["difficulty"]) - 1
+                if 0 <= diff_idx < len(difficulties):
+                    recipe.has_difficulty = [difficulties[diff_idx]]
+            except (ValueError, TypeError):
+                pass 
+        
+        if not recipe.has_difficulty:
+            ing_count = len(recipe.has_ingredient)
+            if ing_count * 3 + time_val < 20:
+                recipe.has_difficulty = [difficulties[0]]
+            elif ing_count * 3 + time_val < 60:
+                recipe.has_difficulty = [difficulties[1]]
+            else:
+                recipe.has_difficulty = [difficulties[2]]
+
+    # 7. Meal Type
+    if "meal_type" in recipe_data:
+        mt_name = recipe_data["meal_type"]
+        if mt_name in meal_types:
+            recipe.is_meal_type = [meal_types[mt_name]]
+
+    # 8. Dietary Flags
+    recipe.is_vegan = [bool(recipe_data.get("vegan", False))]
+    recipe.is_vegetarian = [bool(recipe_data.get("vegetarian", False))]
+
+    # 9. Nutrients
+    if "nutrients" in recipe_data:
+        nutrients = recipe_data["nutrients"]
+        # Use 0.0 as default if missing to ensure data consistency
+        kcal = float(nutrients.get("kcal", 0))
+        prot = float(nutrients.get("protein", 0))
+        fat_val = float(nutrients.get("fat", 0))
+        carb = float(nutrients.get("carbs", 0))
+
+        calories, _ = createIndividual(f"calories_{kcal}", BaseClass=Calories, target_kg=target_kg)
+        calories.amount_of_calories = [kcal]
+        recipe.has_calories = [calories]
+
+        protein, _ = createIndividual(f"protein_{prot}", BaseClass=Protein, target_kg=target_kg)
+        protein.amount_of_protein = [prot]
+        recipe.has_protein = [protein]
+
+        fat, _ = createIndividual(f"fat_{fat_val}", BaseClass=Fat, target_kg=target_kg)
+        fat.amount_of_fat = [fat_val]
+        recipe.has_fat = [fat]
+
+        carbs, _ = createIndividual(f"carbohydrates_{carb}", BaseClass=Carbohydrates, target_kg=target_kg)
+        carbs.amount_of_carbohydrates = [carb]
+        recipe.has_carbohydrates = [carbs]
+
+    return recipe
+
+
+
+
+def delete_recipe_individual(recipe_name: str, target_kg=None):
+    if target_kg is None:
+        target_kg = kg_onto
+    
+    name = onthologifyName(recipe_name)
+    individual = target_kg[name]
+    
+    if individual:
+        from owlready2 import destroy_entity
+        destroy_entity(individual)
+        return True
+    return False

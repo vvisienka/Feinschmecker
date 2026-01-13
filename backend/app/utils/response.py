@@ -15,7 +15,8 @@ def success_response(
     page: Optional[int] = None,
     per_page: Optional[int] = None,
     total: Optional[int] = None,
-    message: Optional[str] = None
+    message: Optional[str] = None,
+    status_code: int = 200
 ) -> tuple:
     """
     Create a standardized success response.
@@ -45,7 +46,7 @@ def success_response(
     if message:
         response['message'] = message
     
-    return jsonify(response), 200
+    return jsonify(response), status_code
 
 
 def error_response(
