@@ -43,7 +43,9 @@ def make_cache_key():
 
 
 @api_bp.route("/recipes", methods=["GET"])
-@limiter.limit(lambda: current_app.config.get("RATELIMIT_DEFAULT", "100 per minute"))
+@limiter.limit(lambda: current_app.config.get("RATELIMIT_DEFAULT", "100 per minute") 
+               if current_app.config.get("RATELIMIT_ENABLED", True) 
+               else "1000000 per minute")  # Very high limit when disabled
 @cache.cached(timeout=None, key_prefix=make_cache_key)  # Use config timeout
 @swag_from("swagger_specs/recipes_get.yml")
 def get_recipes():

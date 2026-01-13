@@ -53,7 +53,7 @@ The Docker setup includes:
 - **Backend** - Flask API server (port 5000)
 - **Frontend** - Vue.js development server (port 3000)
 - **Redis** - Cache and message broker (port 6379)
-- **Celery Worker** - Background task processing
+- **Celery Worker** - Background task processing (supports horizontal scaling)
 - **Celery Beat** - Scheduled task scheduler
 
 ### Useful Commands
@@ -77,7 +77,49 @@ docker compose up --build
 
 # Restart a specific service
 docker compose restart backend
+
+# Scale Celery workers for increased parallelism (e.g., 3 worker instances)
+docker compose up --scale celery-worker=3
+
+# View logs from all worker instances
+docker compose logs -f celery-worker
 ```
+
+### Celery Worker Configuration
+
+Celery workers can be configured for optimal parallelism:
+
+- **Concurrency**: Number of worker processes per worker container (default: 4)
+- **Horizontal Scaling**: Run multiple worker containers for increased throughput
+
+**Configuration Options:**
+
+1. **Environment Variable** (recommended for flexibility):
+   ```bash
+   # Set concurrency per worker (defaults to CPU count if not set)
+   export CELERY_WORKER_CONCURRENCY=4
+   docker compose up
+   ```
+
+2. **Scale Workers Horizontally**:
+   ```bash
+   # Run 3 worker containers, each with concurrency of 4 = 12 parallel tasks
+   docker compose up --scale celery-worker=3
+   ```
+
+3. **Combine Both**:
+   ```bash
+   # Set higher concurrency and scale to multiple workers
+   export CELERY_WORKER_CONCURRENCY=8
+   docker compose up --scale celery-worker=2
+   # Result: 2 workers × 8 concurrency = 16 parallel tasks
+   ```
+
+**Performance Tips:**
+- Default concurrency (4) is suitable for most use cases
+- Increase worker instances for high-load scenarios rather than just concurrency
+- Monitor worker utilization: `docker compose logs -f celery-worker`
+- Tasks are distributed evenly across workers thanks to `prefetch_multiplier=1`
 
 ### Environment Variables
 
@@ -88,6 +130,7 @@ FLASK_ENV=development
 REDIS_URL=redis://redis:6379/0
 # ONTOLOGY_URL=https://example.com/your-custom-ontology.nt  # Optional: Defaults to the local data/feinschmecker.nt
 CORS_ORIGINS=*
+CELERY_WORKER_CONCURRENCY=4  # Number of worker processes per worker container (defaults to CPU count)
 ```
 
 See `.env.example` for all available options.

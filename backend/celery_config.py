@@ -1,9 +1,13 @@
 import os
+import multiprocessing
 from celery import Celery
 
 # Use Docker service name if available, fallback to localhost
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", REDIS_URL)
+
+# Worker concurrency configuration - defaults to CPU count
+CELERY_WORKER_CONCURRENCY = int(os.getenv("CELERY_WORKER_CONCURRENCY", multiprocessing.cpu_count()))
 
 celery = Celery(
     "feinschmecker",
@@ -25,4 +29,7 @@ celery.conf.update(
     },
     task_time_limit=30,        # twardy limit – po 30 s Celery zabije task
     task_soft_time_limit=20,   # miękki limit – task dostaje „ostrzeżenie”
+    # Worker concurrency configuration
+    worker_concurrency=CELERY_WORKER_CONCURRENCY,
+    worker_prefetch_multiplier=1,  # Prevents task hoarding - ensures even distribution across workers
 )

@@ -87,7 +87,8 @@ class DevelopmentConfig(Config):
     # Shorter cache timeout for development
     CACHE_DEFAULT_TIMEOUT = int(os.getenv("CACHE_DEFAULT_TIMEOUT", "60"))
 
-    # Relaxed rate limiting for development
+    # Disable rate limiting for development (useful for performance testing)
+    RATELIMIT_ENABLED = False
     RATELIMIT_DEFAULT = os.getenv("RATELIMIT_DEFAULT", "1000 per minute")
 
     # Allow all origins in development, but include Vite dev server

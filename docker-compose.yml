@@ -6,7 +6,8 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
-    command: redis-server --appendonly yes
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
     networks:
       - feinschmecker-network
     healthcheck:
@@ -63,14 +64,15 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    container_name: feinschmecker-celery-worker
-    command: celery -A backend.celery_config.celery worker --loglevel=info
+    # Note: container_name removed to allow scaling with: docker compose up --scale celery-worker=3
+    command: celery -A backend.celery_config.celery worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-4}
     environment:
       - FLASK_ENV=development
       - PYTHONPATH=/app
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_WORKER_CONCURRENCY=${CELERY_WORKER_CONCURRENCY:-4}
     depends_on:
       redis:
         condition: service_healthy
